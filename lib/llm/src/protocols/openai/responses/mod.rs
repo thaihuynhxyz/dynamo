@@ -687,14 +687,21 @@ fn convert_tools(tools: &[Tool]) -> anyhow::Result<Vec<ChatCompletionTool>> {
             }
             Tool::Namespace(namespace) => {
                 for tool in &namespace.tools {
-                    if let NamespaceToolParamTool::Function(f) = tool {
-                        push_function(
+                    match tool {
+                        NamespaceToolParamTool::Function(f) => push_function(
                             &f.name,
                             &f.description,
                             &f.parameters,
                             f.strict,
                             Some(&namespace.name),
-                        )?;
+                        )?,
+                        NamespaceToolParamTool::Custom(custom) => {
+                            return Err(anyhow::anyhow!(
+                                "Responses namespace '{}' contains unsupported custom tool '{}'; namespace tools currently support function members only",
+                                namespace.name,
+                                custom.name
+                            ));
+                        }
                     }
                 }
             }
@@ -1760,7 +1767,7 @@ mod tests {
     }
 
     #[test]
-    fn test_function_call_input_items() {
+    fn test_namespaced_function_call_input_items() {
         let req = NvCreateResponse {
             inner: CreateResponse {
                 input: InputParam::Items(vec![
@@ -1774,7 +1781,7 @@ mod tests {
                     InputItem::Item(Item::FunctionCall(FunctionToolCall {
                         arguments: r#"{"location":"SF"}"#.into(),
                         call_id: "call_123".into(),
-                        namespace: None,
+                        namespace: Some("weather".into()),
                         name: "get_weather".into(),
                         id: None,
                         status: None,
@@ -1796,10 +1803,13 @@ mod tests {
         let messages = &chat_req.inner.messages;
         assert_eq!(messages.len(), 3);
         assert!(matches!(messages[0], ChatCompletionRequestMessage::User(_)));
-        assert!(matches!(
-            messages[1],
-            ChatCompletionRequestMessage::Assistant(_)
-        ));
+        let ChatCompletionRequestMessage::Assistant(assistant) = &messages[1] else {
+            panic!("expected assistant tool-call message");
+        };
+        let tool_calls = assistant.tool_calls.as_ref().expect("expected tool call");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].function.name, "get_weather");
+        assert_eq!(tool_calls[0].function.arguments, r#"{"location":"SF"}"#);
         assert!(matches!(messages[2], ChatCompletionRequestMessage::Tool(_)));
     }
 
@@ -2635,6 +2645,31 @@ mod tests {
 
         let chat_req: NvCreateChatCompletionRequest = req.try_into().unwrap();
         assert_eq!(chat_req.inner.tools.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_namespace_custom_tool_is_rejected() {
+        let mut req = make_response_with_input("hello");
+        req.inner.tools = Some(
+            serde_json::from_value(serde_json::json!([{
+                "type": "namespace",
+                "name": "editors",
+                "description": "Editing tools",
+                "tools": [{
+                    "type": "custom",
+                    "name": "apply_diff",
+                    "description": "Apply a free-form patch",
+                    "format": {"type": "text"}
+                }]
+            }]))
+            .unwrap(),
+        );
+
+        let error = NvCreateChatCompletionRequest::try_from(req).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Responses namespace 'editors' contains unsupported custom tool 'apply_diff'; namespace tools currently support function members only"
+        );
     }
 
     #[allow(deprecated)]
