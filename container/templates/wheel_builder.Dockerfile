@@ -16,6 +16,32 @@ FROM --platform=linux/amd64 quay.io/pypa/manylinux_2_28_x86_64 AS manylinux_amd6
 FROM --platform=linux/arm64 quay.io/pypa/manylinux_2_28_aarch64 AS manylinux_arm64
 {% endif %}
 
+{% if device == "cuda" and make_efa == true %}
+# EFA Installer 1.49's --build-ngc package path is Ubuntu/Debian-specific.
+# Materialize its SDK in a native-architecture Ubuntu stage, then copy only the
+# installer-owned libfabric prefix into the AlmaLinux manylinux wheel builder.
+FROM ubuntu:24.04 AS efa_sdk
+
+ARG EFA_VERSION
+ARG EFA_INSTALLER_SHA256
+ARG EFA_INSTALLER_SIZE
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# NIXL needs only the EFA libfabric SDK here. The final AWS stage performs the
+# full install, including the matching NCCL OFI plugin.
+RUN --mount=type=cache,target=/var/cache/efa-installer,sharing=locked \
+    --mount=type=bind,source=./container/deps/efa/install_efa.sh,target=/tmp/install_efa.sh,readonly \
+    /tmp/install_efa.sh \
+        "${EFA_VERSION}" "${EFA_INSTALLER_SHA256}" "${EFA_INSTALLER_SIZE}" \
+        --skip-nccl
+{% endif %}
+
 ##################################
 ##### wheel_builder_base #########
 ##################################
@@ -192,6 +218,13 @@ ENV PATH="/opt/rh/gcc-toolset-14/root/usr/bin:${PATH}" \
     LD_LIBRARY_PATH="/opt/rh/gcc-toolset-14/root/usr/lib64:${LD_LIBRARY_PATH}" \
     CC="/opt/rh/gcc-toolset-14/root/usr/bin/gcc" \
     CXX="/opt/rh/gcc-toolset-14/root/usr/bin/g++"
+
+{% if make_efa == true %}
+# Build CUDA NIXL against the exact userspace stack shipped by the EFA image.
+# The Ubuntu SDK stage uses the same content-addressed installer archive as the
+# final AWS stage; no upstream libfabric source build is involved.
+COPY --from=efa_sdk /opt/amazon/efa /opt/amazon/efa
+{% endif %}
 {% endif %}
 
 # Ensure a modern protoc is available (required for --experimental_allow_proto3_optional)
@@ -489,7 +522,7 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
      echo "/usr/local/ucx/lib/ucx" >> /etc/ld.so.conf.d/ucx.conf && \
      ldconfig
 
-{% if device == "cuda" %}
+{% if device == "cuda" and make_efa != true %}
 ARG NIXL_LIBFABRIC_REPO
 ARG NIXL_LIBFABRIC_REF
 RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token \
@@ -733,11 +766,12 @@ RUN --mount=type=secret,id=aws-web-identity-token,target=/run/secrets/aws-token 
     ./contrib/tomlutil.py --wheel-name $PKG_NAME pyproject.toml && \
     mkdir build && \
     if [ "$DEVICE" = "cuda" ]; then \
+        LIBFABRIC_PATH="{% if make_efa == true %}/opt/amazon/efa{% else %}/usr/local/libfabric{% endif %}"; \
         meson setup build/ --prefix=/opt/nvidia/nvda_nixl --buildtype=release \
             -Dcudapath_lib="/usr/local/cuda/lib64" \
             -Dcudapath_inc="/usr/local/cuda/include" \
             -Ducx_path="/usr/local/ucx" \
-            -Dlibfabric_path="/usr/local/libfabric"; \
+            -Dlibfabric_path="${LIBFABRIC_PATH}"; \
     elif [ "$DEVICE" = "xpu" ]; then \
         meson setup build/ --prefix=/opt/intel/intel_nixl --buildtype=release \
             -Ducx_path="/usr/local/ucx"; \

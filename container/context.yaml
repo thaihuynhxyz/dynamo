@@ -60,6 +60,8 @@ dynamo:
   libvpx_ref: "v1.14.1"
   sccache_version: "v0.14.0"
   efa_version: 1.49.0
+  efa_installer_sha256: cf2e9281a2328a243c76f911a490faed43ca0fecfe4733c25e34b2e92a32c309
+  efa_installer_size: "702811844"
 
 vllm:
   cuda13.0:

@@ -125,5 +125,7 @@ ARG SGLANG_KERNEL_REF={{ context.sglang.xpu.sglang_kernel_ref }}
 
 {% if make_efa == true %}
 ARG EFA_VERSION={{ context.dynamo.efa_version }}
+ARG EFA_INSTALLER_SHA256={{ context.dynamo.efa_installer_sha256 }}
+ARG EFA_INSTALLER_SIZE={{ context.dynamo.efa_installer_size }}
 ARG EFA_BASE_IMAGE={{ "runtime" if target=="runtime" else "dev" }}
 {%- endif -%}
