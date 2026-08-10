@@ -393,6 +393,35 @@ func TestDGDDefaulter_DefaultsGroveMinAvailable(t *testing.T) {
 				"Worker": nil,
 			},
 		},
+		{
+			name:         "selected Grove provider remains authoritative when the feature gate is disabled",
+			op:           admissionv1.Update,
+			groveEnabled: false,
+			annotations: map[string]string{
+				consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderGrove,
+				consts.KubeAnnotationEnableGrove:              consts.KubeLabelValueFalse,
+			},
+			components: []nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec{
+				{ComponentName: "Worker", Replicas: ptr.To(int32(3))},
+			},
+			wantMinAvailable: map[string]*int32{
+				"Worker": ptr.To(int32(1)),
+			},
+		},
+		{
+			name:         "selected component provider remains authoritative when Grove is enabled",
+			op:           admissionv1.Update,
+			groveEnabled: true,
+			annotations: map[string]string{
+				consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderComponent,
+			},
+			components: []nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec{
+				{ComponentName: "Worker", Replicas: ptr.To(int32(3))},
+			},
+			wantMinAvailable: map[string]*int32{
+				"Worker": nil,
+			},
+		},
 	}
 
 	for _, tt := range tests {

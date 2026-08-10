@@ -92,6 +92,29 @@ func (v *DynamoGraphDeploymentValidator) Validate(
 	return validation.warnings, invalidDynamoGraphDeploymentError(deployment, allErrs)
 }
 
+// ValidateCreate performs complete create validation on a v1beta1 DGD.
+// ctx and deployment must not be nil.
+func (v *DynamoGraphDeploymentValidator) ValidateCreate(
+	ctx context.Context,
+	deployment *nvidiacomv1beta1.DynamoGraphDeployment,
+	runtimeVersionSource runtimeVersionValidationSource,
+) (admission.Warnings, error) {
+	validation := &dynamoGraphDeploymentValidation{
+		sharedValidation: sharedValidation{ctx: ctx, mgr: v.mgr, runtimeVersionSource: runtimeVersionSource},
+	}
+
+	// Validate the complete new state and then the create-only ownership rules.
+	allErrs := validation.validateDynamoGraphDeployment(deployment)
+	allErrs = append(allErrs, validation.validateDynamoGraphDeploymentCreate(deployment)...)
+	alpha, err := alphaDynamoGraphDeploymentForValidation(deployment)
+	if err != nil {
+		return nil, fmt.Errorf("cannot validate preserved v1alpha1 DynamoGraphDeployment fields: %w", err)
+	}
+	allErrs = append(allErrs, validation.validateDynamoGraphDeploymentV1alpha1(alpha)...)
+
+	return validation.warnings, invalidDynamoGraphDeploymentError(deployment, allErrs)
+}
+
 // ValidateUpdate performs stateful validation comparing old and new v1beta1 DGD objects.
 // ctx, oldDGD, and newDGD must not be nil. runtimeVersionSource identifies the request's source API.
 // If userInfo is nil, replica changes for DGDSA-enabled components fail closed.
@@ -152,6 +175,13 @@ func (v *dynamoGraphDeploymentValidation) validateDynamoGraphDeployment(
 	return allErrs
 }
 
+// validateDynamoGraphDeploymentCreate validates create-only DGD rules. dgd must not be nil.
+func (v *dynamoGraphDeploymentValidation) validateDynamoGraphDeploymentCreate(
+	dgd *nvidiacomv1beta1.DynamoGraphDeployment,
+) field.ErrorList {
+	return v.validateObjectMetaCreate(&dgd.ObjectMeta, field.NewPath("metadata"))
+}
+
 // validateObjectMeta validates DGD objectMeta. objectMeta and fldPath must not be nil.
 func (v *dynamoGraphDeploymentValidation) validateObjectMeta(
 	objectMeta *metav1.ObjectMeta,
@@ -195,6 +225,14 @@ func (v *dynamoGraphDeploymentValidation) validateObjectMeta(
 			[]string{"pod", "container"},
 		))
 	}
+	if value, exists := objectMeta.Annotations[consts.KubeAnnotationSelectedWorkloadProvider]; exists &&
+		value != consts.WorkloadProviderComponent && value != consts.WorkloadProviderGrove {
+		allErrs = append(allErrs, field.NotSupported(
+			annotationsPath.Key(consts.KubeAnnotationSelectedWorkloadProvider),
+			value,
+			[]string{consts.WorkloadProviderComponent, consts.WorkloadProviderGrove},
+		))
+	}
 
 	if hasIntraPodFailover && objectMeta.Annotations[consts.KubeAnnotationDynamoKubeDiscoveryMode] != "container" {
 		allErrs = append(allErrs, field.Invalid(
@@ -205,6 +243,21 @@ func (v *dynamoGraphDeploymentValidation) validateObjectMeta(
 	}
 
 	return allErrs
+}
+
+// validateObjectMetaCreate validates create-only DGD metadata rules.
+// objectMeta and fldPath must not be nil.
+func (v *dynamoGraphDeploymentValidation) validateObjectMetaCreate(
+	objectMeta *metav1.ObjectMeta,
+	fldPath *field.Path,
+) field.ErrorList {
+	if _, exists := objectMeta.Annotations[consts.KubeAnnotationSelectedWorkloadProvider]; !exists {
+		return nil
+	}
+	return field.ErrorList{field.Forbidden(
+		fldPath.Child("annotations").Key(consts.KubeAnnotationSelectedWorkloadProvider),
+		"is controller-owned and cannot be set when creating a DynamoGraphDeployment",
+	)}
 }
 
 // validateDynamoGraphDeploymentSpec validates spec. spec and fldPath must not be nil.
@@ -497,6 +550,11 @@ func (v *dynamoGraphDeploymentValidation) validateDynamoGraphDeploymentUpdate(
 	oldDGD *nvidiacomv1beta1.DynamoGraphDeployment,
 ) field.ErrorList {
 	allErrs := field.ErrorList{}
+	allErrs = append(allErrs, v.validateObjectMetaUpdate(
+		&newDGD.ObjectMeta,
+		&oldDGD.ObjectMeta,
+		field.NewPath("metadata"),
+	)...)
 	allErrs = append(allErrs, v.validateDynamoGraphDeploymentSpecUpdate(
 		&newDGD.Spec,
 		&oldDGD.Spec,
@@ -517,6 +575,43 @@ func (v *dynamoGraphDeploymentValidation) validateDynamoGraphDeploymentUpdate(
 			}
 		}
 	}
+	return allErrs
+}
+
+// validateObjectMetaUpdate validates a DGD metadata update.
+// newObjectMeta, oldObjectMeta, and fldPath must not be nil.
+func (v *dynamoGraphDeploymentValidation) validateObjectMetaUpdate(
+	newObjectMeta *metav1.ObjectMeta,
+	oldObjectMeta *metav1.ObjectMeta,
+	fldPath *field.Path,
+) field.ErrorList {
+	allErrs := field.ErrorList{}
+	annotationsPath := fldPath.Child("annotations")
+	newProvider, newProviderExists := newObjectMeta.Annotations[consts.KubeAnnotationSelectedWorkloadProvider]
+	oldProvider, oldProviderExists := oldObjectMeta.Annotations[consts.KubeAnnotationSelectedWorkloadProvider]
+
+	// Only the operator may establish the provider, and no caller may later
+	// replace or remove the durable selection.
+	providerPath := annotationsPath.Key(consts.KubeAnnotationSelectedWorkloadProvider)
+	switch {
+	case oldProviderExists && (!newProviderExists || newProvider != oldProvider):
+		var invalidValue any
+		if newProviderExists {
+			invalidValue = newProvider
+		}
+		allErrs = append(allErrs, field.Invalid(
+			providerPath,
+			invalidValue,
+			apivalidation.FieldImmutableErrorMsg,
+		))
+	case !oldProviderExists && newProviderExists &&
+		!isOperatorPrincipalRequest(v.userInfo, v.operatorPrincipal):
+		allErrs = append(allErrs, field.Forbidden(
+			providerPath,
+			"is controller-owned and may only be set by the Dynamo operator",
+		))
+	}
+
 	return allErrs
 }
 

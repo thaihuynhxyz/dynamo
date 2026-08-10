@@ -22,6 +22,7 @@ import (
 	"fmt"
 
 	nvidiacomv1beta1 "github.com/ai-dynamo/dynamo/deploy/operator/api/v1beta1"
+	"github.com/ai-dynamo/dynamo/deploy/operator/internal/features"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -33,6 +34,7 @@ type groveProgram struct {
 	workloads       *groveWorkloadsReconciler
 	scalingAdapters *dgdScalingAdaptersReconciler
 	topology        *dgdGroveTopologyConditionReconciler
+	available       bool
 }
 
 // newGroveProgram wires the Grove pathway at the DGD composition root.
@@ -62,6 +64,7 @@ func (r *DynamoGraphDeploymentReconciler) newGroveProgram() *groveProgram {
 		),
 		scalingAdapters: newDGDScalingAdaptersReconciler(r.Client, r.Recorder),
 		topology:        newDGDGroveTopologyConditionReconciler(r.Client),
+		available:       r.RuntimeConfig.Gate.Enabled(features.Grove),
 	}
 }
 
@@ -73,6 +76,15 @@ func (p *groveProgram) Reconcile(
 	req workloadProgramRequest,
 ) (programResult workloadProgramResult, retErr error) {
 	programResult = newWorkloadProgramResult(req.DGD)
+	if !p.available {
+		err := failWorkloadProgram(
+			reasonSelectedWorkloadProviderUnavailable,
+			fmt.Errorf("selected workload provider %q is unavailable because Grove is disabled", workloadProviderGrove),
+		)
+		programResult.Fail(req.DGD.Generation, reasonSelectedWorkloadProviderUnavailable, err)
+		return programResult, err
+	}
+
 	defer func() {
 		if retErr != nil {
 			reason := reasonFailedToReconcileResources

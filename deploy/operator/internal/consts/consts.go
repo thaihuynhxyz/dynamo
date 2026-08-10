@@ -42,6 +42,12 @@ const (
 
 	KubeAnnotationEnableGrove = "nvidia.com/enable-grove"
 
+	// KubeAnnotationSelectedWorkloadProvider records the graph-level workload
+	// provider selected by the operator. The value is immutable after selection.
+	KubeAnnotationSelectedWorkloadProvider = "nvidia.com/selected-workload-provider"
+	WorkloadProviderComponent              = "component"
+	WorkloadProviderGrove                  = "grove"
+
 	// KubeAnnotationGroveUpdateStrategy temporarily exposes the Grove
 	// PodCliqueSet update strategy while the long-term DGD API is settled.
 	// Supported values match Grove exactly: "RollingRecreate" and "OnDelete".

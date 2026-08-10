@@ -74,7 +74,7 @@ func (h *DynamoGraphDeploymentHandler) ValidateCreate(ctx context.Context, obj r
 
 	// Create validator with manager for API group detection and perform validation
 	validator := NewDynamoGraphDeploymentValidator(h.mgr)
-	return validator.Validate(
+	return validator.ValidateCreate(
 		ctx,
 		deployment,
 		runtimeVersionValidationSourceForRequest(ctx, nvidiacomv1beta1.DynamoGraphDeploymentGVK),

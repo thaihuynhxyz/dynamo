@@ -682,17 +682,17 @@ func (m *mockScaleInterface) Patch(ctx context.Context, gvr schema.GroupVersionR
 	return &autoscalingv1.Scale{}, nil
 }
 
-func TestDynamoGraphDeploymentReconciler_isGrovePathway(t *testing.T) {
+func TestProviderFromCurrentIntent(t *testing.T) {
 	tests := []struct {
 		name         string
 		groveEnabled bool
 		annotations  map[string]string
-		want         bool
+		want         workloadProvider
 	}{
 		{
 			name:         "feature disabled without annotation selects component pathway",
 			groveEnabled: false,
-			want:         false,
+			want:         workloadProviderComponent,
 		},
 		{
 			name:         "feature disabled ignores explicit enable annotation",
@@ -700,12 +700,12 @@ func TestDynamoGraphDeploymentReconciler_isGrovePathway(t *testing.T) {
 			annotations: map[string]string{
 				commonconsts.KubeAnnotationEnableGrove: commonconsts.KubeLabelValueTrue,
 			},
-			want: false,
+			want: workloadProviderComponent,
 		},
 		{
 			name:         "feature enabled without annotations selects Grove",
 			groveEnabled: true,
-			want:         true,
+			want:         workloadProviderGrove,
 		},
 		{
 			name:         "feature enabled with unrelated annotation selects Grove",
@@ -713,7 +713,7 @@ func TestDynamoGraphDeploymentReconciler_isGrovePathway(t *testing.T) {
 			annotations: map[string]string{
 				"example.com/unrelated": "value",
 			},
-			want: true,
+			want: workloadProviderGrove,
 		},
 		{
 			name:         "feature enabled with explicit enable annotation selects Grove",
@@ -721,7 +721,7 @@ func TestDynamoGraphDeploymentReconciler_isGrovePathway(t *testing.T) {
 			annotations: map[string]string{
 				commonconsts.KubeAnnotationEnableGrove: commonconsts.KubeLabelValueTrue,
 			},
-			want: true,
+			want: workloadProviderGrove,
 		},
 		{
 			name:         "feature enabled with explicit disable annotation selects component pathway",
@@ -729,7 +729,7 @@ func TestDynamoGraphDeploymentReconciler_isGrovePathway(t *testing.T) {
 			annotations: map[string]string{
 				commonconsts.KubeAnnotationEnableGrove: commonconsts.KubeLabelValueFalse,
 			},
-			want: false,
+			want: workloadProviderComponent,
 		},
 		{
 			name:         "explicit disable annotation is case insensitive",
@@ -737,7 +737,7 @@ func TestDynamoGraphDeploymentReconciler_isGrovePathway(t *testing.T) {
 			annotations: map[string]string{
 				commonconsts.KubeAnnotationEnableGrove: "FaLsE",
 			},
-			want: false,
+			want: workloadProviderComponent,
 		},
 		{
 			name:         "unknown annotation value does not disable Grove",
@@ -745,24 +745,19 @@ func TestDynamoGraphDeploymentReconciler_isGrovePathway(t *testing.T) {
 			annotations: map[string]string{
 				commonconsts.KubeAnnotationEnableGrove: "invalid",
 			},
-			want: true,
+			want: workloadProviderGrove,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Log("Build a reconciler and DGD with the pathway-selection inputs")
-			reconciler := &DynamoGraphDeploymentReconciler{
-				RuntimeConfig: &controller_common.RuntimeConfig{
-					Gate: features.Gates{Grove: tt.groveEnabled},
-				},
-			}
+			t.Log("Build a DGD with the initial pathway-selection inputs")
 			dgd := &v1beta1.DynamoGraphDeployment{
 				ObjectMeta: metav1.ObjectMeta{Annotations: tt.annotations},
 			}
 
-			t.Log("Evaluate the current Grove pathway-selection contract")
-			assert.Equal(t, tt.want, reconciler.isGrovePathway(dgd))
+			t.Log("Resolve the provider using the compatibility selection contract")
+			assert.Equal(t, tt.want, providerFromCurrentIntent(tt.groveEnabled, dgd))
 		})
 	}
 }

@@ -21,7 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+	"time"
 
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/secret"
 
@@ -51,15 +51,22 @@ import (
 )
 
 const (
-	reasonFailedToInitializeWorkerHash Reason = "failed_to_initialize_worker_hash"
-	reasonFailedToMigrateWorkerHash    Reason = "failed_to_migrate_worker_hash"
-	reasonNoMultinodeOrchestrator      Reason = "no_multinode_orchestrator_available"
-	reasonFailedToReconcileResources   Reason = "failed_to_reconcile_the_resources"
-	reasonRollingUpdateFailed          Reason = "rolling_update_failed"
-	reasonWaitingForCheckpoint         Reason = "waiting_for_checkpoint"
+	reasonFailedToInitializeWorkerHash        Reason = "failed_to_initialize_worker_hash"
+	reasonFailedToMigrateWorkerHash           Reason = "failed_to_migrate_worker_hash"
+	reasonNoMultinodeOrchestrator             Reason = "no_multinode_orchestrator_available"
+	reasonFailedToReconcileResources          Reason = "failed_to_reconcile_the_resources"
+	reasonRollingUpdateFailed                 Reason = "rolling_update_failed"
+	reasonWaitingForCheckpoint                Reason = "waiting_for_checkpoint"
+	reasonFailedToSelectWorkloadProvider      Reason = "failed_to_select_workload_provider"
+	reasonSelectedWorkloadProviderUnavailable Reason = "selected_workload_provider_unavailable"
 
 	dgdComponentPodIndex = ".metadata.dgdComponent"
 )
+
+// workloadProviderPersistenceRequeueDelay gives the informer cache time to
+// observe the provider write before the generation-only primary predicate's
+// explicit retry.
+const workloadProviderPersistenceRequeueDelay = time.Second
 
 // rbacManager interface for managing RBAC resources
 type rbacManager interface {
@@ -160,7 +167,37 @@ func (r *DynamoGraphDeploymentReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, err
 	}
 
-	program := r.selectWorkloadProgram(dynamoDeployment)
+	// Resolve and persist the graph-level provider before any workload program
+	// can mutate its resource family.
+	selection, selectionErr := newDGDWorkloadProviderReconciler(
+		r.Client,
+		r.RuntimeConfig.Gate,
+	).Reconcile(ctx, dynamoDeployment)
+	if selectionErr != nil {
+		programResult := newWorkloadProgramResult(dynamoDeployment)
+		programResult.Fail(dynamoDeployment.Generation, reasonFailedToSelectWorkloadProvider, selectionErr)
+		if statusErr := r.persistWorkloadProgramResult(ctx, dynamoDeployment, programResult); statusErr != nil {
+			logger.Error(statusErr, "unable to update status after workload provider selection failure")
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{}, selectionErr
+	}
+	if selection.NewlyPersisted {
+		return ctrl.Result{RequeueAfter: workloadProviderPersistenceRequeueDelay}, nil
+	}
+
+	// Dispatch exclusively through the durable selection. Runtime capability and
+	// user intent are inputs only while the annotation is absent.
+	program, selectionErr := r.selectWorkloadProgram(selection.Provider)
+	if selectionErr != nil {
+		programResult := newWorkloadProgramResult(dynamoDeployment)
+		programResult.Fail(dynamoDeployment.Generation, reasonFailedToSelectWorkloadProvider, selectionErr)
+		if statusErr := r.persistWorkloadProgramResult(ctx, dynamoDeployment, programResult); statusErr != nil {
+			logger.Error(statusErr, "unable to update status after workload program selection failure")
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{}, selectionErr
+	}
 	programResult, programErr := program.Reconcile(ctx, workloadProgramRequest{
 		DGD: dynamoDeployment,
 	})
@@ -193,11 +230,6 @@ func (r *DynamoGraphDeploymentReconciler) persistWorkloadProgramResult(
 		}
 	}
 	return nil
-}
-
-func (r *DynamoGraphDeploymentReconciler) isGrovePathway(dgd *nvidiacomv1beta1.DynamoGraphDeployment) bool {
-	return r.RuntimeConfig.Gate.Enabled(features.Grove) && (dgd.Annotations == nil ||
-		strings.ToLower(dgd.Annotations[consts.KubeAnnotationEnableGrove]) != consts.KubeLabelValueFalse)
 }
 
 func (r *DynamoGraphDeploymentReconciler) FinalizeResource(ctx context.Context, dynamoDeployment *nvidiacomv1beta1.DynamoGraphDeployment) error {

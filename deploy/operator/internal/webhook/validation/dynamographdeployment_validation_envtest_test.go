@@ -39,6 +39,7 @@ import (
 const (
 	dgdAdmissionWorkerName      = "worker"
 	dgdAdmissionUpperWorkerName = "WORKER"
+	dgdAdmissionPriorityClass   = "high-priority"
 )
 
 const sglangBackendFramework = "sglang"
@@ -1436,14 +1437,14 @@ func TestDynamoGraphDeploymentValidator_Validate(t *testing.T) {
 			name:          "priority class requires Grove",
 			groveDisabled: true,
 			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
-				dgd.Spec.PriorityClassName = "high-priority"
+				dgd.Spec.PriorityClassName = dgdAdmissionPriorityClass
 			}),
 			wantWebhookErrs: []string{"spec.priorityClassName: Forbidden: requires the Grove pathway, but Grove is disabled in the operator configuration"},
 		},
 		{
 			name: "priority class is allowed with Grove",
 			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
-				dgd.Spec.PriorityClassName = "high-priority"
+				dgd.Spec.PriorityClassName = dgdAdmissionPriorityClass
 			}),
 		},
 		{
@@ -1600,6 +1601,127 @@ func TestDynamoGraphDeploymentValidator_Validate(t *testing.T) {
 		},
 
 		// Metadata annotation rules.
+		{
+			name: "selected workload provider is controller-owned on create",
+			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{
+					consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderGrove,
+				}
+			}),
+			wantWebhookErrs: []string{"metadata.annotations[nvidia.com/selected-workload-provider]: Forbidden: is controller-owned and cannot be set when creating a DynamoGraphDeployment"},
+		},
+		{
+			name:               "operator can establish selected workload provider",
+			seedWithoutWebhook: true,
+			oldDeployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{consts.KubeAnnotationEnableGrove: consts.KubeLabelValueFalse}
+			}),
+			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{
+					consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderComponent,
+					consts.KubeAnnotationEnableGrove:              consts.KubeLabelValueFalse,
+				}
+			}),
+			username: admissionOperatorPrincipal,
+		},
+		{
+			name:               "non-operator cannot establish selected workload provider",
+			seedWithoutWebhook: true,
+			oldDeployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{consts.KubeAnnotationEnableGrove: consts.KubeLabelValueFalse}
+			}),
+			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{
+					consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderComponent,
+					consts.KubeAnnotationEnableGrove:              consts.KubeLabelValueFalse,
+				}
+			}),
+			username:        "system:serviceaccount:default:regular-user",
+			wantWebhookErrs: []string{"metadata.annotations[nvidia.com/selected-workload-provider]: Forbidden: is controller-owned and may only be set by the Dynamo operator"},
+		},
+		{
+			name:               "selected workload provider rejects unsupported value",
+			seedWithoutWebhook: true,
+			oldDeployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{consts.KubeAnnotationEnableGrove: consts.KubeLabelValueFalse}
+			}),
+			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{
+					consts.KubeAnnotationSelectedWorkloadProvider: "unknown",
+					consts.KubeAnnotationEnableGrove:              consts.KubeLabelValueFalse,
+				}
+			}),
+			username:        admissionOperatorPrincipal,
+			wantWebhookErrs: []string{`metadata.annotations[nvidia.com/selected-workload-provider]: Unsupported value: "unknown": supported values: "component", "grove"`},
+		},
+		{
+			name:               "selected workload provider cannot change",
+			seedWithoutWebhook: true,
+			groveDisabled:      true,
+			oldDeployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{
+					consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderComponent,
+				}
+			}),
+			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{
+					consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderGrove,
+				}
+			}),
+			username:        admissionOperatorPrincipal,
+			wantWebhookErrs: []string{`metadata.annotations[nvidia.com/selected-workload-provider]: Invalid value: "grove": ` + apivalidation.FieldImmutableErrorMsg},
+		},
+		{
+			name:               "selected workload provider cannot be removed",
+			seedWithoutWebhook: true,
+			groveDisabled:      true,
+			oldDeployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{
+					consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderComponent,
+				}
+			}),
+			deployment: betaDGDForAdmission(nil),
+			username:   admissionOperatorPrincipal,
+			wantWebhookErrs: []string{
+				"metadata.annotations[nvidia.com/selected-workload-provider]: Invalid value: null: " + apivalidation.FieldImmutableErrorMsg,
+			},
+		},
+		{
+			name:               "selected Grove provider retains Grove admission semantics when the gate is disabled",
+			seedWithoutWebhook: true,
+			groveDisabled:      true,
+			oldDeployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{
+					consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderGrove,
+				}
+				dgd.Spec.PriorityClassName = dgdAdmissionPriorityClass
+			}),
+			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{
+					consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderGrove,
+				}
+				dgd.Spec.PriorityClassName = dgdAdmissionPriorityClass
+				dgd.Labels = map[string]string{"updated": "true"}
+			}),
+		},
+		{
+			name:               "selected component provider retains component admission semantics when Grove is enabled",
+			seedWithoutWebhook: true,
+			oldDeployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{
+					consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderComponent,
+				}
+				dgd.Spec.PriorityClassName = dgdAdmissionPriorityClass
+			}),
+			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{
+					consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderComponent,
+				}
+				dgd.Spec.PriorityClassName = dgdAdmissionPriorityClass
+				dgd.Labels = map[string]string{"updated": "true"}
+			}),
+			wantWebhookErrs: []string{`spec.priorityClassName: Forbidden: requires the Grove pathway, but workload provider "component" is selected`},
+		},
 		{
 			name: "origin version accepts semver",
 			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {

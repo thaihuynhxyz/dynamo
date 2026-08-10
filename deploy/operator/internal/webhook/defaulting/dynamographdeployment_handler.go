@@ -55,9 +55,10 @@ func NewDGDDefaulter(operatorVersion string) *DGDDefaulter {
 
 // Default implements admission.CustomDefaulter.
 // On every operation: defaults nil Replicas to 1 for all components.
-// On every Grove-pathway operation: defaults nil MinAvailable to 1. Scaling to
-// replicas=0 does not rewrite MinAvailable; it remains the component's
-// configured minimum viable unit.
+// On every Grove-pathway operation: defaults nil MinAvailable to 1. A persisted
+// selected workload provider is authoritative over the feature gate and legacy
+// Grove intent annotation. Scaling to replicas=0 does not rewrite MinAvailable;
+// it remains the component's configured minimum viable unit.
 // On CREATE: stamps nvidia.com/dynamo-operator-origin-version with the operator version.
 // On UPDATE/DELETE: the origin version annotation is immutable once set.
 func (d *DGDDefaulter) Default(ctx context.Context, obj runtime.Object) error {
@@ -112,6 +113,12 @@ func (d *DGDDefaulter) Default(ctx context.Context, obj runtime.Object) error {
 }
 
 func (d *DGDDefaulter) isGrovePathway(ctx context.Context, dgd *nvidiacomv1beta1.DynamoGraphDeployment) bool {
+	// Once selected, the durable provider is authoritative even if the feature
+	// gate or the original user intent later differs.
+	if provider, exists := dgd.Annotations[consts.KubeAnnotationSelectedWorkloadProvider]; exists {
+		return provider == consts.WorkloadProviderGrove
+	}
+
 	return features.MustGateFrom(ctx).Enabled(features.Grove) && (dgd.Annotations == nil ||
 		strings.ToLower(dgd.Annotations[consts.KubeAnnotationEnableGrove]) != consts.KubeLabelValueFalse)
 }

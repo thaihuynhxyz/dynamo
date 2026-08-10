@@ -29,6 +29,7 @@ import (
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/consts"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/dynamo"
 	grovev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -137,6 +138,27 @@ func grovePathwayForDynamoGraphDeployment(
 	groveEnabled bool,
 	dgd *nvidiacomv1beta1.DynamoGraphDeployment,
 ) (bool, string) {
+	// A durable selection takes precedence over current capabilities and the
+	// original routing annotation. Availability is reported by the selected
+	// workload program, while admission retains that program's API semantics.
+	if provider, exists := dgd.Annotations[consts.KubeAnnotationSelectedWorkloadProvider]; exists {
+		switch provider {
+		case consts.WorkloadProviderGrove:
+			return true, ""
+		case consts.WorkloadProviderComponent:
+			return false, fmt.Sprintf(
+				"requires the Grove pathway, but workload provider %q is selected",
+				provider,
+			)
+		default:
+			return false, fmt.Sprintf(
+				"requires the Grove pathway, but annotation %q has unsupported value %q",
+				consts.KubeAnnotationSelectedWorkloadProvider,
+				provider,
+			)
+		}
+	}
+
 	if !groveEnabled {
 		return false, "requires the Grove pathway, but Grove is disabled in the operator configuration"
 	}
@@ -149,6 +171,13 @@ func grovePathwayForDynamoGraphDeployment(
 		)
 	}
 	return true, ""
+}
+
+func isOperatorPrincipalRequest(
+	userInfo *authenticationv1.UserInfo,
+	operatorPrincipal string,
+) bool {
+	return userInfo != nil && operatorPrincipal != "" && userInfo.Username == operatorPrincipal
 }
 
 func dgdComponentResourceNameLength(
