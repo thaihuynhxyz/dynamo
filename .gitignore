@@ -164,6 +164,11 @@ package-lock.json
 # Compiled static libraries
 *.a
 
+# PageBroker C++ generated files and test binary.
+deploy/snapshot/pagebroker/pagebroker.pb.cc
+deploy/snapshot/pagebroker/pagebroker.pb.h
+deploy/snapshot/pagebroker/wire-fixture
+
 # macOS
 .DS_Store
 **/.DS_Store
