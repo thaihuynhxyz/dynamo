@@ -177,7 +177,7 @@ func isOperatorPrincipalRequest(
 	userInfo *authenticationv1.UserInfo,
 	operatorPrincipal string,
 ) bool {
-	return userInfo != nil && operatorPrincipal != "" && userInfo.Username == operatorPrincipal
+	return userInfo != nil && userInfo.Username == operatorPrincipal
 }
 
 func dgdComponentResourceNameLength(

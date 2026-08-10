@@ -58,6 +58,7 @@ func TestDynamoGraphDeploymentValidator_Validate(t *testing.T) {
 		groveDisabled      bool                             // disables the configured Grove pathway
 		checkpointOff      bool                             // disables checkpoint creation and restore
 		seedWithoutWebhook bool                             // seeds oldDeployment without validating it
+		terminatingUpdate  bool                             // marks oldDeployment for deletion before updating it
 		username           string                           // supplies the admission request identity
 
 		wantSchemaErr      string
@@ -1687,6 +1688,25 @@ func TestDynamoGraphDeploymentValidator_Validate(t *testing.T) {
 			},
 		},
 		{
+			name:               "selected workload provider cannot be removed during termination",
+			seedWithoutWebhook: true,
+			terminatingUpdate:  true,
+			groveDisabled:      true,
+			oldDeployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{
+					consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderComponent,
+				}
+				dgd.Finalizers = []string{"test.nvidia.com/hold-deletion"}
+			}),
+			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Finalizers = []string{"test.nvidia.com/hold-deletion"}
+			}),
+			username: admissionOperatorPrincipal,
+			wantWebhookErrs: []string{
+				"metadata.annotations[nvidia.com/selected-workload-provider]: Invalid value: null: " + apivalidation.FieldImmutableErrorMsg,
+			},
+		},
+		{
 			name:               "selected Grove provider retains Grove admission semantics when the gate is disabled",
 			seedWithoutWebhook: true,
 			groveDisabled:      true,
@@ -2314,6 +2334,7 @@ func TestDynamoGraphDeploymentValidator_Validate(t *testing.T) {
 				gates:              gates,
 				withoutTopology:    tt.withoutTopology,
 				seedWithoutWebhook: tt.seedWithoutWebhook,
+				terminatingUpdate:  tt.terminatingUpdate,
 				username:           tt.username,
 				wantSchemaError:    tt.wantSchemaErr,
 				wantCELError:       tt.wantCELErr,

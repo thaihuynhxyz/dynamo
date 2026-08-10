@@ -94,6 +94,7 @@ func (r *dgdWorkloadProviderReconciler) Reconcile(
 	dgd.Annotations[consts.KubeAnnotationSelectedWorkloadProvider] = string(provider)
 	patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
 	if err := r.client.Patch(ctx, dgd, patch); err != nil {
+		dgd.Annotations = base.Annotations
 		return workloadProviderSelection{}, fmt.Errorf("persist selected workload provider %q: %w", provider, err)
 	}
 
@@ -135,14 +136,14 @@ func (r *dgdWorkloadProviderReconciler) hasOwnedComponentWorkloads(
 	ctx context.Context,
 	dgd *nvidiacomv1beta1.DynamoGraphDeployment,
 ) (bool, error) {
-	// The DGD label narrows the cached list; the controller reference is the
-	// authoritative ownership check.
+	// Scan the namespace cache and use only the controller reference as the
+	// authoritative relationship. Labels on existing workloads may be missing,
+	// stale, or user-modified and therefore cannot safely narrow adoption.
 	list := &nvidiacomv1beta1.DynamoComponentDeploymentList{}
 	if err := r.client.List(
 		ctx,
 		list,
 		client.InNamespace(dgd.Namespace),
-		client.MatchingLabels{consts.KubeLabelDynamoGraphDeploymentName: dgd.Name},
 	); err != nil {
 		return false, fmt.Errorf("list DynamoComponentDeployments owned by DynamoGraphDeployment %s/%s: %w", dgd.Namespace, dgd.Name, err)
 	}
@@ -158,14 +159,14 @@ func (r *dgdWorkloadProviderReconciler) hasOwnedGroveWorkloads(
 	ctx context.Context,
 	dgd *nvidiacomv1beta1.DynamoGraphDeployment,
 ) (bool, error) {
-	// A missing Grove API means no Grove workload can currently be observed. It
-	// must not prevent a component-only cluster from recording its selection.
+	// Scan the namespace cache and use only the controller reference as the
+	// authoritative relationship. A missing Grove API means no Grove workload
+	// can currently be observed and must not prevent component selection.
 	list := &grovev1alpha1.PodCliqueSetList{}
 	if err := r.client.List(
 		ctx,
 		list,
 		client.InNamespace(dgd.Namespace),
-		client.MatchingLabels{consts.KubeLabelDynamoGraphDeploymentName: dgd.Name},
 	); err != nil {
 		if meta.IsNoMatchError(err) {
 			return false, nil

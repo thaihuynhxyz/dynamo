@@ -27,6 +27,7 @@ import (
 
 	networkingv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/scale"
@@ -174,6 +175,12 @@ func (r *DynamoGraphDeploymentReconciler) Reconcile(ctx context.Context, req ctr
 		r.RuntimeConfig.Gate,
 	).Reconcile(ctx, dynamoDeployment)
 	if selectionErr != nil {
+		// Treat an optimistic-lock conflict as pending cache convergence, not a
+		// provider-selection failure visible in DGD status.
+		if apierrors.IsConflict(selectionErr) {
+			return ctrl.Result{RequeueAfter: workloadProviderPersistenceRequeueDelay}, nil
+		}
+
 		programResult := newWorkloadProgramResult(dynamoDeployment)
 		programResult.Fail(dynamoDeployment.Generation, reasonFailedToSelectWorkloadProvider, selectionErr)
 		if statusErr := r.persistWorkloadProgramResult(ctx, dynamoDeployment, programResult); statusErr != nil {

@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	nvidiacomv1beta1 "github.com/ai-dynamo/dynamo/deploy/operator/api/v1beta1"
+	"github.com/ai-dynamo/dynamo/deploy/operator/internal/consts"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/features"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -84,12 +85,41 @@ func TestDynamoGraphDeploymentHandlerValidateUpdate(t *testing.T) {
 		}
 	})
 
+	t.Run("optional operator identity permits provider initialization", func(t *testing.T) {
+		t.Log("Build a handler for the supported startup mode without operator self-identification")
+		handlerWithoutPrincipal := NewDynamoGraphDeploymentHandler(newGroveTopologyTestManager(t), "")
+		oldDGD := newBetaDGDForValidation()
+		newDGD := oldDGD.DeepCopy()
+		newDGD.Annotations = map[string]string{
+			consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderComponent,
+		}
+		requestContext := dgdAdmissionContextWithUserInfo(
+			admissionv1.Update,
+			nvidiacomv1beta1.DynamoGraphDeploymentGVK,
+			&authenticationv1.UserInfo{Username: "custom-operator"},
+		)
+
+		t.Log("Validate the mandatory initial provider write without a configured identity check")
+		warnings, err := handlerWithoutPrincipal.ValidateUpdate(requestContext, oldDGD, newDGD)
+		if err != nil {
+			t.Fatalf("ValidateUpdate() error = %v", err)
+		}
+		if len(warnings) != 0 {
+			t.Fatalf("ValidateUpdate() warnings = %v, want none", warnings)
+		}
+	})
+
 	t.Run("deleting", func(t *testing.T) {
 		oldDGD := newBetaDGDForValidation()
+		oldDGD.Annotations = map[string]string{
+			consts.KubeAnnotationSelectedWorkloadProvider: consts.WorkloadProviderComponent,
+		}
+		oldDGD.Finalizers = []string{"test.nvidia.com/hold-deletion"}
 		newDGD := oldDGD.DeepCopy()
 		now := metav1.Now()
 		newDGD.DeletionTimestamp = &now
-		if _, err := handler.ValidateUpdate(ctx, &runtime.Unknown{}, newDGD); err != nil {
+		newDGD.Finalizers = nil
+		if _, err := handler.ValidateUpdate(ctx, oldDGD, newDGD); err != nil {
 			t.Fatalf("ValidateUpdate() error = %v", err)
 		}
 	})

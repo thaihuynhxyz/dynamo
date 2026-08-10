@@ -20,6 +20,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"testing"
 
@@ -31,7 +32,10 @@ import (
 	grovev1alpha1 "github.com/ai-dynamo/grove/operator/api/core/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -45,8 +49,8 @@ func TestDGDWorkloadProviderReconcilerReconcile(t *testing.T) {
 		name               string
 		groveEnabled       bool
 		annotations        map[string]string
-		ownedProviders     []workloadProvider
-		foreignDCD         bool
+		workloads          []workloadProviderTestWorkload
+		groveListErr       error
 		wantProvider       workloadProvider
 		wantNewlyPersisted bool
 		wantErr            string
@@ -66,6 +70,15 @@ func TestDGDWorkloadProviderReconcilerReconcile(t *testing.T) {
 			wantNewlyPersisted: true,
 		},
 		{
+			name: "cluster without Grove API selects component provider",
+			groveListErr: fmt.Errorf("discover Grove API: %w", &meta.NoKindMatchError{
+				GroupKind:        grovev1alpha1.SchemeGroupVersion.WithKind("PodCliqueSet").GroupKind(),
+				SearchedVersions: []string{grovev1alpha1.SchemeGroupVersion.Version},
+			}),
+			wantProvider:       workloadProviderComponent,
+			wantNewlyPersisted: true,
+		},
+		{
 			name:         "explicit Grove opt out selects component provider",
 			groveEnabled: true,
 			annotations: map[string]string{
@@ -75,29 +88,83 @@ func TestDGDWorkloadProviderReconcilerReconcile(t *testing.T) {
 			wantNewlyPersisted: true,
 		},
 		{
-			name:               "owned DCD adopts component provider despite current Grove default",
-			groveEnabled:       true,
-			ownedProviders:     []workloadProvider{workloadProviderComponent},
+			name:         "owned DCD adopts component provider despite current Grove default",
+			groveEnabled: true,
+			workloads: []workloadProviderTestWorkload{{
+				name:     "test-dgd-worker",
+				provider: workloadProviderComponent,
+				owned:    true,
+				labeled:  true,
+			}},
 			wantProvider:       workloadProviderComponent,
 			wantNewlyPersisted: true,
 		},
 		{
-			name:               "owned PodCliqueSet adopts Grove despite current opt out",
-			annotations:        map[string]string{consts.KubeAnnotationEnableGrove: consts.KubeLabelValueFalse},
-			ownedProviders:     []workloadProvider{workloadProviderGrove},
+			name:        "owned PodCliqueSet adopts Grove despite current opt out",
+			annotations: map[string]string{consts.KubeAnnotationEnableGrove: consts.KubeLabelValueFalse},
+			workloads: []workloadProviderTestWorkload{{
+				name:     "test-dgd",
+				provider: workloadProviderGrove,
+				owned:    true,
+				labeled:  true,
+			}},
 			wantProvider:       workloadProviderGrove,
 			wantNewlyPersisted: true,
 		},
 		{
-			name:           "mixed owned workload families fail closed",
-			groveEnabled:   true,
-			ownedProviders: []workloadProvider{workloadProviderComponent, workloadProviderGrove},
-			wantErr:        "owned DynamoComponentDeployments and Grove PodCliqueSets both exist",
+			name:         "owned DCD without graph label adopts component provider",
+			groveEnabled: true,
+			workloads: []workloadProviderTestWorkload{{
+				name:     "test-dgd-worker",
+				provider: workloadProviderComponent,
+				owned:    true,
+			}},
+			wantProvider:       workloadProviderComponent,
+			wantNewlyPersisted: true,
 		},
 		{
-			name:               "foreign DCD with matching label is ignored",
-			groveEnabled:       true,
-			foreignDCD:         true,
+			name:        "owned PodCliqueSet without graph label adopts Grove",
+			annotations: map[string]string{consts.KubeAnnotationEnableGrove: consts.KubeLabelValueFalse},
+			workloads: []workloadProviderTestWorkload{{
+				name:     "test-dgd",
+				provider: workloadProviderGrove,
+				owned:    true,
+			}},
+			wantProvider:       workloadProviderGrove,
+			wantNewlyPersisted: true,
+		},
+		{
+			name:         "mixed owned workloads fail closed regardless of labels",
+			groveEnabled: true,
+			workloads: []workloadProviderTestWorkload{
+				{
+					name:     "test-dgd-worker",
+					provider: workloadProviderComponent,
+					owned:    true,
+				},
+				{
+					name:     "test-dgd",
+					provider: workloadProviderGrove,
+					owned:    true,
+					labeled:  true,
+				},
+			},
+			wantErr: "owned DynamoComponentDeployments and Grove PodCliqueSets both exist",
+		},
+		{
+			name:         "foreign labeled and unlabeled workloads are ignored",
+			groveEnabled: true,
+			workloads: []workloadProviderTestWorkload{
+				{
+					name:     "foreign-dcd",
+					provider: workloadProviderComponent,
+					labeled:  true,
+				},
+				{
+					name:     "foreign-pcs",
+					provider: workloadProviderGrove,
+				},
+			},
 			wantProvider:       workloadProviderGrove,
 			wantNewlyPersisted: true,
 		},
@@ -122,16 +189,28 @@ func TestDGDWorkloadProviderReconcilerReconcile(t *testing.T) {
 				},
 			}
 			objects := []client.Object{dgd}
-			for _, provider := range tt.ownedProviders {
-				objects = append(objects, workloadProviderTestResource(dgd, provider, true))
+			for _, workload := range tt.workloads {
+				objects = append(objects, workloadProviderTestResource(dgd, workload))
 			}
-			if tt.foreignDCD {
-				objects = append(objects, workloadProviderTestResource(dgd, workloadProviderComponent, false))
-			}
-			kubeClient := fake.NewClientBuilder().
+			clientBuilder := fake.NewClientBuilder().
 				WithScheme(newDynamoGraphDeploymentControllerTestScheme(t)).
-				WithObjects(objects...).
-				Build()
+				WithObjects(objects...)
+			if tt.groveListErr != nil {
+				clientBuilder = clientBuilder.WithInterceptorFuncs(interceptor.Funcs{
+					List: func(
+						ctx context.Context,
+						kubeClient client.WithWatch,
+						list client.ObjectList,
+						opts ...client.ListOption,
+					) error {
+						if _, ok := list.(*grovev1alpha1.PodCliqueSetList); ok {
+							return tt.groveListErr
+						}
+						return kubeClient.List(ctx, list, opts...)
+					},
+				})
+			}
+			kubeClient := clientBuilder.Build()
 			var requestDGD nvidiacomv1beta1.DynamoGraphDeployment
 			require.NoError(t, kubeClient.Get(t.Context(), client.ObjectKeyFromObject(dgd), &requestDGD))
 			dgd = &requestDGD
@@ -197,10 +276,66 @@ func TestDGDWorkloadProviderReconcilerDoesNotPersistFailedPatch(t *testing.T) {
 	_, err := reconciler.Reconcile(t.Context(), dgd)
 	require.ErrorIs(t, err, patchErr)
 
-	t.Log("Verify the API object remains unselected so the operation can retry")
+	t.Log("Verify both the request and API object remain unselected so the operation can retry")
+	assert.Nil(t, dgd.Annotations)
 	var stored nvidiacomv1beta1.DynamoGraphDeployment
 	require.NoError(t, kubeClient.Get(t.Context(), client.ObjectKeyFromObject(dgd), &stored))
 	assert.NotContains(t, stored.Annotations, consts.KubeAnnotationSelectedWorkloadProvider)
+}
+
+func TestDynamoGraphDeploymentReconcileTreatsProviderConflictAsPending(t *testing.T) {
+	dgd := &nvidiacomv1beta1.DynamoGraphDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-dgd",
+			Namespace: "default",
+			UID:       types.UID("dgd-uid"),
+		},
+		Spec: nvidiacomv1beta1.DynamoGraphDeploymentSpec{
+			Components: []nvidiacomv1beta1.DynamoComponentDeploymentSharedSpec{{
+				ComponentName: "worker",
+			}},
+		},
+	}
+	conflict := apierrors.NewConflict(
+		schema.GroupResource{Group: nvidiacomv1beta1.GroupVersion.Group, Resource: "dynamographdeployments"},
+		dgd.Name,
+		errors.New("stale resource version"),
+	)
+	kubeClient := fake.NewClientBuilder().
+		WithScheme(newDynamoGraphDeploymentControllerTestScheme(t)).
+		WithObjects(dgd).
+		WithStatusSubresource(&nvidiacomv1beta1.DynamoGraphDeployment{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(
+				context.Context,
+				client.WithWatch,
+				client.Object,
+				client.Patch,
+				...client.PatchOption,
+			) error {
+				return conflict
+			},
+		}).
+		Build()
+	reconciler := &DynamoGraphDeploymentReconciler{
+		Client:        kubeClient,
+		Config:        &configv1alpha1.OperatorConfiguration{},
+		RuntimeConfig: &commoncontroller.RuntimeConfig{},
+		Recorder:      record.NewFakeRecorder(10),
+	}
+
+	t.Log("Reconcile an unselected DGD whose provider patch conflicts with a newer API object")
+	result, err := reconciler.Reconcile(t.Context(), ctrl.Request{
+		NamespacedName: client.ObjectKeyFromObject(dgd),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, workloadProviderPersistenceRequeueDelay, result.RequeueAfter)
+
+	t.Log("Verify the transient conflict did not publish a provider-selection failure")
+	var stored nvidiacomv1beta1.DynamoGraphDeployment
+	require.NoError(t, kubeClient.Get(t.Context(), client.ObjectKeyFromObject(dgd), &stored))
+	assert.NotContains(t, stored.Annotations, consts.KubeAnnotationSelectedWorkloadProvider)
+	assert.Empty(t, stored.Status)
 }
 
 func TestDynamoGraphDeploymentReconcilePersistsProviderBeforeWorkloads(t *testing.T) {
@@ -250,35 +385,44 @@ func TestDynamoGraphDeploymentReconcilePersistsProviderBeforeWorkloads(t *testin
 	assert.Empty(t, podCliqueSets.Items)
 }
 
+type workloadProviderTestWorkload struct {
+	name     string
+	provider workloadProvider
+	owned    bool
+	labeled  bool
+}
+
 func workloadProviderTestResource(
 	dgd *nvidiacomv1beta1.DynamoGraphDeployment,
-	provider workloadProvider,
-	owned bool,
+	workload workloadProviderTestWorkload,
 ) client.Object {
-	labels := map[string]string{consts.KubeLabelDynamoGraphDeploymentName: dgd.Name}
+	var labels map[string]string
+	if workload.labeled {
+		labels = map[string]string{consts.KubeLabelDynamoGraphDeploymentName: dgd.Name}
+	}
 	ownerReferences := []metav1.OwnerReference(nil)
-	if owned {
+	if workload.owned {
 		ownerReferences = []metav1.OwnerReference{
 			*metav1.NewControllerRef(dgd, nvidiacomv1beta1.DynamoGraphDeploymentGVK),
 		}
 	}
 
-	switch provider {
+	switch workload.provider {
 	case workloadProviderComponent:
 		return &nvidiacomv1beta1.DynamoComponentDeployment{ObjectMeta: metav1.ObjectMeta{
-			Name:            "test-dgd-worker",
+			Name:            workload.name,
 			Namespace:       dgd.Namespace,
 			Labels:          labels,
 			OwnerReferences: ownerReferences,
 		}}
 	case workloadProviderGrove:
 		return &grovev1alpha1.PodCliqueSet{ObjectMeta: metav1.ObjectMeta{
-			Name:            "test-dgd",
+			Name:            workload.name,
 			Namespace:       dgd.Namespace,
 			Labels:          labels,
 			OwnerReferences: ownerReferences,
 		}}
 	default:
-		panic("unsupported test workload provider " + string(provider))
+		panic("unsupported test workload provider " + string(workload.provider))
 	}
 }

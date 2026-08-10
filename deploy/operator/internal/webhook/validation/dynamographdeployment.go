@@ -118,6 +118,7 @@ func (v *DynamoGraphDeploymentValidator) ValidateCreate(
 // ValidateUpdate performs stateful validation comparing old and new v1beta1 DGD objects.
 // ctx, oldDGD, and newDGD must not be nil. runtimeVersionSource identifies the request's source API.
 // If userInfo is nil, replica changes for DGDSA-enabled components fail closed.
+// Terminating resources validate only metadata invariants so finalizer removal remains possible.
 func (v *DynamoGraphDeploymentValidator) ValidateUpdate(
 	ctx context.Context,
 	oldDGD *nvidiacomv1beta1.DynamoGraphDeployment,
@@ -130,6 +131,17 @@ func (v *DynamoGraphDeploymentValidator) ValidateUpdate(
 		sharedValidation:  sharedValidation{ctx: ctx, mgr: v.mgr, runtimeVersionSource: runtimeVersionSource},
 		userInfo:          userInfo,
 		operatorPrincipal: operatorPrincipal,
+	}
+
+	// Limit terminating updates to metadata invariants so unrelated validation
+	// does not block finalizer removal while controller-owned state remains protected.
+	if !newDGD.DeletionTimestamp.IsZero() {
+		allErrs := validation.validateObjectMetaUpdate(
+			&newDGD.ObjectMeta,
+			&oldDGD.ObjectMeta,
+			field.NewPath("metadata"),
+		)
+		return validation.warnings, invalidDynamoGraphDeploymentError(newDGD, allErrs)
 	}
 
 	allErrs := validation.validateDynamoGraphDeploymentUpdate(newDGD, oldDGD)
@@ -590,8 +602,10 @@ func (v *dynamoGraphDeploymentValidation) validateObjectMetaUpdate(
 	newProvider, newProviderExists := newObjectMeta.Annotations[consts.KubeAnnotationSelectedWorkloadProvider]
 	oldProvider, oldProviderExists := oldObjectMeta.Annotations[consts.KubeAnnotationSelectedWorkloadProvider]
 
-	// Only the operator may establish the provider, and no caller may later
-	// replace or remove the durable selection.
+	// Only the identified operator may establish the provider, and no caller may
+	// later replace or remove the durable selection. When startup could not
+	// identify the operator, skip only the initial identity check so the
+	// supported optional-identity mode can still cross this mandatory boundary.
 	providerPath := annotationsPath.Key(consts.KubeAnnotationSelectedWorkloadProvider)
 	switch {
 	case oldProviderExists && (!newProviderExists || newProvider != oldProvider):
@@ -604,7 +618,7 @@ func (v *dynamoGraphDeploymentValidation) validateObjectMetaUpdate(
 			invalidValue,
 			apivalidation.FieldImmutableErrorMsg,
 		))
-	case !oldProviderExists && newProviderExists &&
+	case !oldProviderExists && newProviderExists && v.operatorPrincipal != "" &&
 		!isOperatorPrincipalRequest(v.userInfo, v.operatorPrincipal):
 		allErrs = append(allErrs, field.Forbidden(
 			providerPath,

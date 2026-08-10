@@ -49,7 +49,8 @@ type DynamoGraphDeploymentHandler struct {
 // NewDynamoGraphDeploymentHandler creates a new handler for DynamoGraphDeployment Webhook.
 // mgr must not be nil.
 // operatorPrincipal is the full Kubernetes SA username of the operator, used to authorize
-// replica changes on scaling-adapter-enabled components (#7656).
+// replica changes on scaling-adapter-enabled components (#7656) and initialization of
+// controller-owned DGD metadata. It may be empty when operator self-identification is disabled.
 func NewDynamoGraphDeploymentHandler(mgr manager.Manager, operatorPrincipal string) *DynamoGraphDeploymentHandler {
 	return &DynamoGraphDeploymentHandler{
 		mgr:               mgr,
@@ -96,12 +97,6 @@ func (h *DynamoGraphDeploymentHandler) ValidateUpdate(ctx context.Context, oldOb
 
 	logger.Info("validate update", "name", newDeployment.Name, "namespace", newDeployment.Namespace)
 
-	// Skip validation if the resource is being deleted (to allow finalizer removal)
-	if !newDeployment.DeletionTimestamp.IsZero() {
-		logger.Info("skipping validation for resource being deleted", "name", newDeployment.Name)
-		return nil, nil
-	}
-
 	oldDeployment, err := castToDynamoGraphDeployment(oldObj)
 	if err != nil {
 		return nil, err
@@ -110,17 +105,24 @@ func (h *DynamoGraphDeploymentHandler) ValidateUpdate(ctx context.Context, oldOb
 	// Create validator with manager for API group detection and perform validation.
 	validator := NewDynamoGraphDeploymentValidator(h.mgr)
 	runtimeVersionSource := runtimeVersionValidationSourceForRequest(ctx, nvidiacomv1beta1.DynamoGraphDeploymentGVK)
-	warnings, err := validator.Validate(ctx, newDeployment, runtimeVersionSourceDisabled)
-	if err != nil {
-		return warnings, err
+
+	// Run complete new-state validation only while the resource is active.
+	var warnings admission.Warnings
+	if newDeployment.DeletionTimestamp.IsZero() {
+		warnings, err = validator.Validate(ctx, newDeployment, runtimeVersionSourceDisabled)
+		if err != nil {
+			return warnings, err
+		}
+	} else {
+		logger.Info("limiting validation for terminating resource to metadata invariants", "name", newDeployment.Name)
 	}
 
 	// Get user info from admission request context for identity-based validation
 	var userInfo *authenticationv1.UserInfo
 	req, err := admission.RequestFromContext(ctx)
 	if err != nil {
-		logger.Error(err, "failed to get admission request from context, replica changes for DGDSA-enabled services will be rejected")
-		// userInfo remains nil, so scaling-adapter replica validation fails closed.
+		logger.Error(err, "failed to get admission request from context, identity-protected DGD updates will be rejected")
+		// userInfo remains nil, so configured identity checks fail closed.
 	} else {
 		userInfo = &req.UserInfo
 	}

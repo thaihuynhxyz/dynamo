@@ -89,6 +89,7 @@ type admissionTestCase struct {
 	gates              features.Gates
 	seedGates          *features.Gates
 	seedWithoutWebhook bool
+	terminatingUpdate  bool
 	withoutTopology    bool
 	username           string
 
@@ -135,6 +136,18 @@ func runAdmissionTest(t *testing.T, test admissionTestCase) *unstructured.Unstru
 			seedClient = newAdmissionResourceClient(t, env, test.oldObject, legacySeedUsername, warnings)
 		}
 		old := seedAdmissionObject(t, seedClient, test, env.Namespace())
+		if test.terminatingUpdate {
+			t.Log("Mark the finalizer-held old resource for deletion through the Kubernetes API server")
+			if err := resourceClient.Delete(t.Context(), old.GetName(), metav1.DeleteOptions{}); err != nil {
+				t.Fatalf("mark old resource for deletion: %v", err)
+			}
+			old, err = resourceClient.Get(t.Context(), old.GetName(), metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get terminating old resource: %v", err)
+			}
+			current.SetDeletionTimestamp(old.GetDeletionTimestamp())
+			current.SetDeletionGracePeriodSeconds(old.GetDeletionGracePeriodSeconds())
+		}
 
 		t.Log("Submit the update request through the Kubernetes API server")
 		admissionGate.set(test.gates)

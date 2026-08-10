@@ -76,6 +76,8 @@ func (p *groveProgram) Reconcile(
 	req workloadProgramRequest,
 ) (programResult workloadProgramResult, retErr error) {
 	programResult = newWorkloadProgramResult(req.DGD)
+
+	// Fail a durable Grove selection when Grove is unavailable rather than falling back.
 	if !p.available {
 		err := failWorkloadProgram(
 			reasonSelectedWorkloadProviderUnavailable,
