@@ -157,6 +157,33 @@ func TestComputeBetaDGDWorkersSpecHash_IgnoresGeneratedDCDObjectIdentity(t *test
 	assert.Equal(t, baseHash, mustComputeBetaDGDWorkersSpecHash(t, betaDGD(t, changed)))
 }
 
+func TestComputeDCDWorkersSpecHashNormalizesWorkerGenerationLabel(t *testing.T) {
+	t.Log("generate a worker DCD with an active v1 generation label")
+	dgd := rawBetaDGD(t, baseDGD(map[string]*v1alpha1.DynamoComponentDeploymentSharedSpec{
+		"worker": {ComponentType: commonconsts.ComponentTypeWorker},
+	}))
+	expectedHash := mustComputeBetaDGDWorkersSpecHash(t, dgd)
+
+	dcds, err := GenerateDynamoComponentsDeployments(
+		dgd,
+		nil,
+		nil,
+		RollingUpdateContext{NewWorkerHash: "active-v1-worker-hash"},
+	)
+	if !assert.NoError(t, err) {
+		return
+	}
+
+	t.Log("hash the active DCD after normalizing its generation label")
+	activeWorkerDCDs := make([]*v1beta1.DynamoComponentDeployment, 0, len(dcds))
+	for _, dcd := range dcds {
+		activeWorkerDCDs = append(activeWorkerDCDs, dcd)
+	}
+	actualHash, err := ComputeDCDWorkersSpecHash(activeWorkerDCDs)
+	assert.NoError(t, err)
+	assert.Equal(t, expectedHash, actualHash)
+}
+
 func TestComputeBetaDGDWorkersSpecHash_NoWorkers(t *testing.T) {
 	dgd := baseDGD(map[string]*v1alpha1.DynamoComponentDeploymentSharedSpec{
 		"frontend": {ComponentType: commonconsts.ComponentTypeFrontend},

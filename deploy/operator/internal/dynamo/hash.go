@@ -25,6 +25,7 @@ import (
 
 	"github.com/ai-dynamo/dynamo/deploy/operator/api/v1alpha1"
 	"github.com/ai-dynamo/dynamo/deploy/operator/api/v1beta1"
+	commonconsts "github.com/ai-dynamo/dynamo/deploy/operator/internal/consts"
 	"github.com/ai-dynamo/dynamo/deploy/operator/internal/runtimeversion"
 )
 
@@ -63,6 +64,19 @@ func ComputeDGDWorkersSpecHash(dgd *v1beta1.DynamoGraphDeployment) (string, erro
 		return "", err
 	}
 
+	workerDCDs := make([]*v1beta1.DynamoComponentDeployment, 0, len(dcds))
+	for _, dcd := range dcds {
+		if dcd != nil {
+			workerDCDs = append(workerDCDs, dcd)
+		}
+	}
+	return ComputeDCDWorkersSpecHash(workerDCDs)
+}
+
+// ComputeDCDWorkersSpecHash computes the v2 worker hash from existing worker
+// DCDs. It normalizes the self-referential worker-hash labels so the result is
+// comparable to a DGD-generated hash.
+func ComputeDCDWorkersSpecHash(dcds []*v1beta1.DynamoComponentDeployment) (string, error) {
 	type workerTemplate struct {
 		Labels         map[string]string                     `json:"labels,omitempty"`
 		Annotations    map[string]string                     `json:"annotations,omitempty"`
@@ -72,30 +86,55 @@ func ComputeDGDWorkersSpecHash(dgd *v1beta1.DynamoGraphDeployment) (string, erro
 
 	workerDCDs := make(map[string]workerTemplate, len(dcds))
 	for _, dcd := range dcds {
-		if dcd != nil && IsWorkerComponent(string(dcd.Spec.ComponentType)) {
-			componentName := GetDCDComponentName(dcd)
-			if componentName == "" {
-				return "", fmt.Errorf("generated worker DCD %q has no component name label", dcd.Name)
-			}
-			if _, exists := workerDCDs[componentName]; exists {
-				return "", fmt.Errorf("duplicate generated worker DCD component name %q", componentName)
-			}
-			workerDCDs[componentName] = workerTemplate{
-				Labels:         GetDCDKubeLabels(dcd),
-				Annotations:    GetDCDKubeAnnotations(dcd),
-				RuntimeVersion: resolvedRuntimeVersionForHash(&dcd.Spec.DynamoComponentDeploymentSharedSpec),
-				Spec:           workerHashSpec(dcd),
-			}
+		if dcd == nil || !IsWorkerComponent(string(dcd.Spec.ComponentType)) {
+			continue
+		}
+
+		// Replace the active generation identity before including rendered DCD metadata in the hash.
+		hashDCD := dcd.DeepCopy()
+		normalizeWorkerHashForHashing(hashDCD)
+
+		componentName := GetDCDComponentName(hashDCD)
+		if componentName == "" {
+			return "", fmt.Errorf("worker DCD %q has no component name label", hashDCD.Name)
+		}
+		if _, exists := workerDCDs[componentName]; exists {
+			return "", fmt.Errorf("duplicate worker DCD component name %q", componentName)
+		}
+		workerDCDs[componentName] = workerTemplate{
+			Labels:         GetDCDKubeLabels(hashDCD),
+			Annotations:    GetDCDKubeAnnotations(hashDCD),
+			RuntimeVersion: resolvedRuntimeVersionForHash(&hashDCD.Spec.DynamoComponentDeploymentSharedSpec),
+			Spec:           workerHashSpec(hashDCD),
 		}
 	}
 
 	data, err := json.Marshal(workerDCDs)
 	if err != nil {
-		return "", fmt.Errorf("marshal generated worker DCDs: %w", err)
+		return "", fmt.Errorf("marshal worker DCDs: %w", err)
 	}
 
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])[:8], nil
+}
+
+// normalizeWorkerHashForHashing removes the generation-specific value from a
+// DCD while preserving the shape used by generated DCDs during v2 hashing.
+func normalizeWorkerHashForHashing(dcd *v1beta1.DynamoComponentDeployment) {
+	if dcd == nil {
+		return
+	}
+	if dcd.Labels == nil {
+		dcd.Labels = make(map[string]string)
+	}
+	dcd.Labels[commonconsts.KubeLabelDynamoWorkerHash] = dgdWorkerHashPlaceholderValue
+	if dcd.Spec.PodTemplate == nil {
+		return
+	}
+	if dcd.Spec.PodTemplate.Labels == nil {
+		dcd.Spec.PodTemplate.Labels = make(map[string]string)
+	}
+	dcd.Spec.PodTemplate.Labels[commonconsts.KubeLabelDynamoWorkerHash] = dgdWorkerHashPlaceholderValue
 }
 
 func workerHashSpec(dcd *v1beta1.DynamoComponentDeployment) v1beta1.DynamoComponentDeploymentSpec {

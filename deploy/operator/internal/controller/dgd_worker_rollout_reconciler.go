@@ -326,20 +326,24 @@ func (r *dgdWorkerRolloutReconciler) migrateCurrentWorkerHashIfNeeded(
 		return err
 	}
 
-	var next workerGenerationHashes
-	var eventMessage string
-	switch {
-	case current.v1 == desired.v1 && current.v2 == "" && current.v1 != desired.v2:
-		next = current
-		next.v2 = desired.v2
-		eventMessage = "Recorded compatible v1 and v2 worker hash annotations without rolling workers"
-	default:
+	// Only a v1-only generation whose compatibility hash is still current needs v2 migration.
+	if current.v1 != desired.v1 || current.v2 != "" || current.v1 == desired.v2 {
 		return nil
 	}
 
-	if next == current {
-		return nil
+	activeV2Hash, foundActiveWorkers, err := r.activeWorkerV2HashFromDCDs(ctx, dgd, current.v1)
+	if err != nil {
+		return err
 	}
+
+	next := current
+	next.v2 = desired.v2
+	eventMessage := "Recorded compatible v1 and v2 worker hash annotations without rolling workers"
+	if foundActiveWorkers {
+		next.v2 = activeV2Hash
+		eventMessage = "Recorded v2 worker hash from the active v1 worker generation"
+	}
+
 	r.setCurrentWorkerHashes(dgd, next)
 	if err := r.Update(ctx, dgd); err != nil {
 		return fmt.Errorf("failed to migrate worker hash annotations: %w", err)
@@ -352,6 +356,45 @@ func (r *dgdWorkerRolloutReconciler) migrateCurrentWorkerHashIfNeeded(
 	}
 
 	return nil
+}
+
+// activeWorkerV2HashFromDCDs hashes the worker DCDs that carry the active v1
+// generation label. No DCDs exist for the unsupported Grove pathway, which
+// retains the compatibility backfill based on the desired DGD.
+func (r *dgdWorkerRolloutReconciler) activeWorkerV2HashFromDCDs(
+	ctx context.Context,
+	dgd *nvidiacomv1beta1.DynamoGraphDeployment,
+	activeV1Hash string,
+) (string, bool, error) {
+	dcdList := &nvidiacomv1beta1.DynamoComponentDeploymentList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(dgd.Namespace),
+		client.MatchingLabels{
+			consts.KubeLabelDynamoGraphDeploymentName: dgd.Name,
+			consts.KubeLabelDynamoWorkerHash:          activeV1Hash,
+		},
+	}
+
+	if err := r.List(ctx, dcdList, listOpts...); err != nil {
+		return "", false, fmt.Errorf("failed to list active v1 worker DCDs: %w", err)
+	}
+
+	activeWorkerDCDs := make([]*nvidiacomv1beta1.DynamoComponentDeployment, 0, len(dcdList.Items))
+	for i := range dcdList.Items {
+		dcd := &dcdList.Items[i]
+		if dynamo.IsWorkerComponent(string(dcd.Spec.ComponentType)) {
+			activeWorkerDCDs = append(activeWorkerDCDs, dcd)
+		}
+	}
+	if len(activeWorkerDCDs) == 0 {
+		return "", false, nil
+	}
+
+	activeV2Hash, err := dynamo.ComputeDCDWorkersSpecHash(activeWorkerDCDs)
+	if err != nil {
+		return "", false, fmt.Errorf("compute active v1 worker DCD hash: %w", err)
+	}
+	return activeV2Hash, true, nil
 }
 
 // activeWorkerHashForDCDGeneration returns the hash used for generated worker
