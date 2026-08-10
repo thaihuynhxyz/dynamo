@@ -525,61 +525,89 @@ func TestLegacyAlphaHashCompatibility_V2OnlyChangeUsesNewV2Generation(t *testing
 }
 
 func TestMigrateCurrentWorkerHashUsesActiveV1WorkerDCDs(t *testing.T) {
-	t.Log("create the active v1 worker generation")
-	activeDGD := createTestDGD("test-dgd", map[string]*nvidiacomv1alpha1.DynamoComponentDeploymentSharedSpec{
-		"worker": {
-			ComponentType:          consts.ComponentTypeWorker,
-			RuntimeVersionOverride: "1.5.0",
+	tests := []struct {
+		name                  string
+		desiredRuntimeVersion string
+		wantRollout           bool
+	}{
+		{
+			name:                  "unchanged runtime version does not roll",
+			desiredRuntimeVersion: "1.5.0",
+			wantRollout:           false,
 		},
-	})
-	activeDGD.Spec.Components[0].PodTemplate = &corev1.PodTemplateSpec{
-		Spec: corev1.PodSpec{Containers: []corev1.Container{{
-			Name:  consts.MainContainerName,
-			Image: "registry.example/dynamo:custom",
-		}}},
-	}
-	activeV1Hash := legacyDGDWorkersSpecHash(t, activeDGD)
-	activeV2Hash := betaDGDWorkersSpecHash(t, activeDGD)
-
-	activeDCDs, err := dynamo.GenerateDynamoComponentsDeployments(
-		activeDGD,
-		nil,
-		nil,
-		dynamo.RollingUpdateContext{NewWorkerHash: activeV1Hash},
-	)
-	require.NoError(t, err)
-
-	// Seed the fake API client with only the DCDs from the active v1 generation.
-	activeWorkerObjects := make([]runtime.Object, 0, len(activeDCDs))
-	for _, dcd := range activeDCDs {
-		if dynamo.IsWorkerComponent(string(dcd.Spec.ComponentType)) {
-			activeWorkerObjects = append(activeWorkerObjects, dcd)
-		}
+		{
+			name:                  "changed runtime version rolls",
+			desiredRuntimeVersion: "1.5.1",
+			wantRollout:           true,
+		},
 	}
 
-	t.Log("change only the desired runtime version override")
-	dgd := activeDGD.DeepCopy()
-	dgd.Annotations = map[string]string{consts.AnnotationCurrentWorkerHash: activeV1Hash}
-	dgd.Spec.Components[0].RuntimeVersionOverride = "1.5.1"
-	desiredV1Hash := legacyDGDWorkersSpecHash(t, dgd)
-	desiredV2Hash := betaDGDWorkersSpecHash(t, dgd)
-	require.Equal(t, activeV1Hash, desiredV1Hash)
-	require.NotEqual(t, activeV2Hash, desiredV2Hash)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Log("create the active v1 worker generation")
+			activeDGD := createTestDGD("test-dgd", map[string]*nvidiacomv1alpha1.DynamoComponentDeploymentSharedSpec{
+				"worker": {
+					ComponentType:          consts.ComponentTypeWorker,
+					RuntimeVersionOverride: "1.5.0",
+				},
+			})
+			activeDGD.Spec.Components[0].PodTemplate = &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{
+					Name:  consts.MainContainerName,
+					Image: "registry.example/dynamo:custom",
+				}}},
+			}
+			activeV1Hash := legacyDGDWorkersSpecHash(t, activeDGD)
+			activeV2Hash := betaDGDWorkersSpecHash(t, activeDGD)
 
-	t.Log("migrate the v2 hash from the active worker DCDs")
-	r := createTestReconcilerWithStatus(dgd, withObjects(activeWorkerObjects...))
-	require.NoError(t, r.migrateCurrentWorkerHashIfNeeded(context.Background(), dgd))
-	require.Equal(t, activeV1Hash, dgd.Annotations[consts.AnnotationCurrentWorkerHash])
-	require.Equal(t, activeV2Hash, dgd.Annotations[consts.AnnotationCurrentWorkerHashV2])
+			activeDCDs, err := dynamo.GenerateDynamoComponentsDeployments(
+				activeDGD,
+				nil,
+				nil,
+				dynamo.RollingUpdateContext{NewWorkerHash: activeV1Hash},
+			)
+			require.NoError(t, err)
 
-	t.Log("verify that the desired v2 hash triggers a rollout")
-	trigger, err := r.shouldTriggerRollingUpdate(dgd)
-	require.NoError(t, err)
-	require.True(t, trigger)
+			// Seed the fake API client with only the DCDs from the active v1 generation.
+			activeWorkerObjects := make([]runtime.Object, 0, len(activeDCDs))
+			for _, dcd := range activeDCDs {
+				if dynamo.IsWorkerComponent(string(dcd.Spec.ComponentType)) {
+					activeWorkerObjects = append(activeWorkerObjects, dcd)
+				}
+			}
 
-	rollingCtx, err := r.buildRollingUpdateContext(context.Background(), dgd)
-	require.NoError(t, err)
-	require.Equal(t, desiredV2Hash, rollingCtx.NewWorkerHash)
+			t.Log("set the desired runtime version and migrate from the active worker DCDs")
+			dgd := activeDGD.DeepCopy()
+			dgd.Annotations = map[string]string{consts.AnnotationCurrentWorkerHash: activeV1Hash}
+			dgd.Spec.Components[0].RuntimeVersionOverride = tt.desiredRuntimeVersion
+			desiredV1Hash := legacyDGDWorkersSpecHash(t, dgd)
+			desiredV2Hash := betaDGDWorkersSpecHash(t, dgd)
+			require.Equal(t, activeV1Hash, desiredV1Hash)
+			if tt.wantRollout {
+				require.NotEqual(t, activeV2Hash, desiredV2Hash)
+			} else {
+				require.Equal(t, activeV2Hash, desiredV2Hash)
+			}
+
+			r := createTestReconcilerWithStatus(dgd, withObjects(activeWorkerObjects...))
+			require.NoError(t, r.migrateCurrentWorkerHashIfNeeded(context.Background(), dgd))
+			require.Equal(t, activeV1Hash, dgd.Annotations[consts.AnnotationCurrentWorkerHash])
+			require.Equal(t, activeV2Hash, dgd.Annotations[consts.AnnotationCurrentWorkerHashV2])
+
+			t.Log("verify whether the desired v2 hash triggers a rollout")
+			trigger, err := r.shouldTriggerRollingUpdate(dgd)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantRollout, trigger)
+
+			rollingCtx, err := r.buildRollingUpdateContext(context.Background(), dgd)
+			require.NoError(t, err)
+			if tt.wantRollout {
+				require.Equal(t, desiredV2Hash, rollingCtx.NewWorkerHash)
+			} else {
+				require.Equal(t, activeV1Hash, rollingCtx.NewWorkerHash)
+			}
+		})
+	}
 }
 
 func TestUnsupportedPathwayMigratesV1OnlyAndKeepsV2OnlyGeneration(t *testing.T) {
