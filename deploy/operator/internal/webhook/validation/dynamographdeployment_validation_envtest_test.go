@@ -1707,6 +1707,29 @@ func TestDynamoGraphDeploymentValidator_Validate(t *testing.T) {
 			},
 		},
 		{
+			name:               "selected workload provider value is validated during termination",
+			seedWithoutWebhook: true,
+			terminatingUpdate:  true,
+			groveDisabled:      true,
+			oldDeployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{
+					consts.KubeAnnotationEnableGrove: consts.KubeLabelValueFalse,
+				}
+				dgd.Finalizers = []string{"test.nvidia.com/hold-deletion"}
+			}),
+			deployment: betaDGDForAdmission(func(dgd *nvidiacomv1beta1.DynamoGraphDeployment) {
+				dgd.Annotations = map[string]string{
+					consts.KubeAnnotationSelectedWorkloadProvider: "unknown",
+					consts.KubeAnnotationEnableGrove:              consts.KubeLabelValueFalse,
+				}
+				dgd.Finalizers = []string{"test.nvidia.com/hold-deletion"}
+			}),
+			username: admissionOperatorPrincipal,
+			wantWebhookErrs: []string{
+				`metadata.annotations[nvidia.com/selected-workload-provider]: Unsupported value: "unknown": supported values: "component", "grove"`,
+			},
+		},
+		{
 			name:               "selected Grove provider retains Grove admission semantics when the gate is disabled",
 			seedWithoutWebhook: true,
 			groveDisabled:      true,

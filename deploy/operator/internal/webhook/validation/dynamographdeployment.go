@@ -136,11 +136,16 @@ func (v *DynamoGraphDeploymentValidator) ValidateUpdate(
 	// Limit terminating updates to metadata invariants so unrelated validation
 	// does not block finalizer removal while controller-owned state remains protected.
 	if !newDGD.DeletionTimestamp.IsZero() {
-		allErrs := validation.validateObjectMetaUpdate(
+		metadataPath := field.NewPath("metadata")
+		allErrs := validation.validateSelectedWorkloadProviderValue(
+			&newDGD.ObjectMeta,
+			metadataPath,
+		)
+		allErrs = append(allErrs, validation.validateObjectMetaUpdate(
 			&newDGD.ObjectMeta,
 			&oldDGD.ObjectMeta,
-			field.NewPath("metadata"),
-		)
+			metadataPath,
+		)...)
 		return validation.warnings, invalidDynamoGraphDeploymentError(newDGD, allErrs)
 	}
 
@@ -237,14 +242,7 @@ func (v *dynamoGraphDeploymentValidation) validateObjectMeta(
 			[]string{"pod", "container"},
 		))
 	}
-	if value, exists := objectMeta.Annotations[consts.KubeAnnotationSelectedWorkloadProvider]; exists &&
-		value != consts.WorkloadProviderComponent && value != consts.WorkloadProviderGrove {
-		allErrs = append(allErrs, field.NotSupported(
-			annotationsPath.Key(consts.KubeAnnotationSelectedWorkloadProvider),
-			value,
-			[]string{consts.WorkloadProviderComponent, consts.WorkloadProviderGrove},
-		))
-	}
+	allErrs = append(allErrs, v.validateSelectedWorkloadProviderValue(objectMeta, fldPath)...)
 
 	if hasIntraPodFailover && objectMeta.Annotations[consts.KubeAnnotationDynamoKubeDiscoveryMode] != "container" {
 		allErrs = append(allErrs, field.Invalid(
@@ -255,6 +253,24 @@ func (v *dynamoGraphDeploymentValidation) validateObjectMeta(
 	}
 
 	return allErrs
+}
+
+// validateSelectedWorkloadProviderValue validates the controller-owned provider value.
+// objectMeta and fldPath must not be nil.
+func (v *dynamoGraphDeploymentValidation) validateSelectedWorkloadProviderValue(
+	objectMeta *metav1.ObjectMeta,
+	fldPath *field.Path,
+) field.ErrorList {
+	value, exists := objectMeta.Annotations[consts.KubeAnnotationSelectedWorkloadProvider]
+	if !exists || value == consts.WorkloadProviderComponent || value == consts.WorkloadProviderGrove {
+		return nil
+	}
+
+	return field.ErrorList{field.NotSupported(
+		fldPath.Child("annotations").Key(consts.KubeAnnotationSelectedWorkloadProvider),
+		value,
+		[]string{consts.WorkloadProviderComponent, consts.WorkloadProviderGrove},
+	)}
 }
 
 // validateObjectMetaCreate validates create-only DGD metadata rules.
