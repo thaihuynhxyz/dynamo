@@ -7,7 +7,9 @@ use std::collections::HashMap;
 mod default;
 mod policy;
 
-pub use default::{DefaultWorkerPicker, DefaultWorkerScorer, DefaultWorkerSelector};
+pub use default::DefaultWorkerSelector;
+
+use default::{DefaultWorkerPicker, DefaultWorkerScorer};
 pub use policy::{
     ScoredWorkerCandidate, WorkerCacheInput, WorkerCandidate, WorkerInputView, WorkerInputs,
     WorkerLoadInput, WorkerPicker, WorkerRoutingInput, WorkerScorer, WorkerSelectionContext,
