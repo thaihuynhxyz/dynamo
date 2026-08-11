@@ -12,7 +12,8 @@ use dynamo_kv_router::services::selection::{
 };
 use dynamo_kv_router::{
     KvRouterConfig, WorkerCandidate, WorkerInputView, WorkerInputs, WorkerPicker, WorkerScorer,
-    WorkerSelectionContext, WorkerSelectionPolicy, WorkerSelectionPolicyError,
+    WorkerSelectionContext, WorkerSelectionInputTrigger, WorkerSelectionPolicy,
+    WorkerSelectionPolicyError,
 };
 
 struct LeastBusyScorer;
@@ -53,14 +54,36 @@ impl WorkerScorer for UncachedBlocksScorer {
     }
 }
 
-struct LowestCostPicker;
+struct RequestAwarePicker;
 
-impl WorkerPicker for LowestCostPicker {
+impl WorkerPicker for RequestAwarePicker {
+    fn required_worker_inputs(&self) -> WorkerInputs {
+        WorkerInputs::CACHE
+    }
+
     fn pick(
         &mut self,
-        _context: &WorkerSelectionContext<'_>,
+        context: &WorkerSelectionContext<'_>,
         input: WorkerInputView<'_>,
     ) -> Result<usize, WorkerSelectionPolicyError> {
+        if context
+            .session_context()
+            .and_then(|session| session.input_trigger())
+            == Some(WorkerSelectionInputTrigger::ToolResult)
+        {
+            return input
+                .cache()
+                .ok_or_else(|| WorkerSelectionPolicyError::failed("cache input unavailable"))?
+                .iter()
+                .enumerate()
+                .max_by(|(_, left), (_, right)| {
+                    left.device_overlap_blocks()
+                        .total_cmp(&right.device_overlap_blocks())
+                })
+                .map(|(row, _)| row)
+                .ok_or_else(|| WorkerSelectionPolicyError::failed("no eligible worker"));
+        }
+
         input
             .candidates()
             .iter()
@@ -86,7 +109,7 @@ fn provider(
                 config.clone(),
                 worker_type,
                 vec![Box::new(LeastBusyScorer), Box::new(UncachedBlocksScorer)],
-                Box::new(LowestCostPicker),
+                Box::new(RequestAwarePicker),
             )
         },
     ))
