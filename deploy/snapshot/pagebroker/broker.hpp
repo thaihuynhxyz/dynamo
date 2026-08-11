@@ -10,7 +10,7 @@ class Broker {
  public:
   Broker(std::filesystem::path working_directory, std::filesystem::path checkpoint_storage_directory);
 
-  Response Handle(const Request& request);
+  Response HandleRequest(const Request& request);
 
  private:
   Response Restore(const RestoreRequest& request);

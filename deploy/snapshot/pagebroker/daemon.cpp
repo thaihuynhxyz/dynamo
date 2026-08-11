@@ -48,7 +48,7 @@ Serve(int client, Broker* broker)
     return;
   }
   Request request;
-  std::string response = request.ParseFromArray(bytes.data(), received) ? Encode(broker->Handle(request))
+  std::string response = request.ParseFromArray(bytes.data(), received) ? Encode(broker->HandleRequest(request))
                                                                         : Error("invalid PageBroker request");
   send(client, response.data(), response.size(), MSG_NOSIGNAL);
 }

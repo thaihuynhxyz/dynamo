@@ -91,7 +91,7 @@ Broker::StagedRestoresDirectory() const
 }
 
 Response
-Broker::Handle(const Request& request)
+Broker::HandleRequest(const Request& request)
 {
   switch (request.command_case()) {
     case Request::kRestore: {
