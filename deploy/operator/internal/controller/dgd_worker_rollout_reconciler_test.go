@@ -528,6 +528,7 @@ func TestMigrateCurrentWorkerHashUsesActiveV1WorkerDCDs(t *testing.T) {
 	tests := []struct {
 		name                  string
 		desiredRuntimeVersion string
+		completedRestart      bool
 		wantRollout           bool
 	}{
 		{
@@ -539,6 +540,12 @@ func TestMigrateCurrentWorkerHashUsesActiveV1WorkerDCDs(t *testing.T) {
 			name:                  "changed runtime version rolls",
 			desiredRuntimeVersion: "1.5.1",
 			wantRollout:           true,
+		},
+		{
+			name:                  "completed restart does not roll",
+			desiredRuntimeVersion: "1.5.0",
+			completedRestart:      true,
+			wantRollout:           false,
 		},
 	}
 
@@ -558,23 +565,39 @@ func TestMigrateCurrentWorkerHashUsesActiveV1WorkerDCDs(t *testing.T) {
 				}}},
 			}
 			activeV1Hash := legacyDGDWorkersSpecHash(t, activeDGD)
-			activeV2Hash := betaDGDWorkersSpecHash(t, activeDGD)
+			var restartState *dynamo.RestartState
+			if tt.completedRestart {
+				activeDGD.Spec.Restart = &nvidiacomv1beta1.Restart{ID: "restart-1"}
+				activeDGD.Status.Restart = &nvidiacomv1beta1.RestartStatus{
+					ObservedID: "restart-1",
+					Phase:      nvidiacomv1beta1.RestartPhaseCompleted,
+				}
+				restartState = dynamo.DetermineRestartState(activeDGD, activeDGD.Status.Restart)
+				require.NotNil(t, restartState)
+			}
 
 			activeDCDs, err := dynamo.GenerateDynamoComponentsDeployments(
 				activeDGD,
-				nil,
+				restartState,
 				nil,
 				dynamo.RollingUpdateContext{NewWorkerHash: activeV1Hash},
 			)
 			require.NoError(t, err)
 
 			// Seed the fake API client with only the DCDs from the active v1 generation.
+			activeWorkerDCDs := make([]*nvidiacomv1beta1.DynamoComponentDeployment, 0, len(activeDCDs))
 			activeWorkerObjects := make([]runtime.Object, 0, len(activeDCDs))
 			for _, dcd := range activeDCDs {
 				if dynamo.IsWorkerComponent(string(dcd.Spec.ComponentType)) {
+					activeWorkerDCDs = append(activeWorkerDCDs, dcd)
 					activeWorkerObjects = append(activeWorkerObjects, dcd)
+					if tt.completedRestart {
+						require.Equal(t, "restart-1", dcd.Spec.PodTemplate.Annotations[consts.RestartAnnotation])
+					}
 				}
 			}
+			activeV2Hash, err := dynamo.ComputeDCDWorkersSpecHash(activeWorkerDCDs)
+			require.NoError(t, err)
 
 			t.Log("set the desired runtime version and migrate from the active worker DCDs")
 			dgd := activeDGD.DeepCopy()

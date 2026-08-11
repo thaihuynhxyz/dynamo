@@ -74,8 +74,8 @@ func ComputeDGDWorkersSpecHash(dgd *v1beta1.DynamoGraphDeployment) (string, erro
 }
 
 // ComputeDCDWorkersSpecHash computes the v2 worker hash from existing worker
-// DCDs. It normalizes the self-referential worker-hash labels so the result is
-// comparable to a DGD-generated hash.
+// DCDs. It normalizes controller-managed metadata so the result is comparable
+// to a DGD-generated hash.
 func ComputeDCDWorkersSpecHash(dcds []*v1beta1.DynamoComponentDeployment) (string, error) {
 	type workerTemplate struct {
 		Labels         map[string]string                     `json:"labels,omitempty"`
@@ -118,8 +118,8 @@ func ComputeDCDWorkersSpecHash(dcds []*v1beta1.DynamoComponentDeployment) (strin
 	return hex.EncodeToString(hash[:])[:8], nil
 }
 
-// normalizeWorkerHashForHashing removes the generation-specific value from a
-// DCD while preserving the shape used by generated DCDs during v2 hashing.
+// normalizeWorkerHashForHashing removes controller-managed state from a DCD
+// while preserving the shape used by generated DCDs during v2 hashing.
 func normalizeWorkerHashForHashing(dcd *v1beta1.DynamoComponentDeployment) {
 	if dcd == nil {
 		return
@@ -135,6 +135,9 @@ func normalizeWorkerHashForHashing(dcd *v1beta1.DynamoComponentDeployment) {
 		dcd.Spec.PodTemplate.Labels = make(map[string]string)
 	}
 	dcd.Spec.PodTemplate.Labels[commonconsts.KubeLabelDynamoWorkerHash] = dgdWorkerHashPlaceholderValue
+
+	// Remove the completed restart request, which is controller state rather than worker generation state.
+	delete(dcd.Spec.PodTemplate.Annotations, commonconsts.RestartAnnotation)
 }
 
 func workerHashSpec(dcd *v1beta1.DynamoComponentDeployment) v1beta1.DynamoComponentDeploymentSpec {
