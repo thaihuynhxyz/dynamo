@@ -14,6 +14,9 @@ namespace {
 
 namespace fs = std::filesystem;
 
+constexpr char kTemporaryCheckpointsDirectoryName[] = "transactions";
+constexpr char kStagedRestoresDirectoryName[] = "staged";
+
 Response
 Reply(bool ok, std::string transaction_id = {}, std::string directory_path = {}, std::string error = {})
 {
@@ -69,12 +72,22 @@ ID()
 
 Broker::Broker(fs::path working_directory, fs::path checkpoint_storage_directory)
     : working_directory_(fs::weakly_canonical(std::move(working_directory))),
-      checkpoint_storage_directory_(fs::weakly_canonical(std::move(checkpoint_storage_directory))),
-      temporary_checkpoints_directory_(working_directory_ / "transactions"),
-      staged_restore_directory_(working_directory_ / "staged")
+      checkpoint_storage_directory_(fs::weakly_canonical(std::move(checkpoint_storage_directory)))
 {
-  fs::create_directories(temporary_checkpoints_directory_);
-  fs::create_directories(staged_restore_directory_);
+  fs::create_directories(TemporaryCheckpointsDirectory());
+  fs::create_directories(StagedRestoresDirectory());
+}
+
+fs::path
+Broker::TemporaryCheckpointsDirectory() const
+{
+  return working_directory_ / kTemporaryCheckpointsDirectoryName;
+}
+
+fs::path
+Broker::StagedRestoresDirectory() const
+{
+  return working_directory_ / kStagedRestoresDirectoryName;
 }
 
 Response
@@ -129,8 +142,9 @@ Broker::Restore(const RestoreRequest& request)
   }
   if (!HasSpace(working_directory_, bytes))
     return Reply(false, {}, {}, "insufficient staging disk budget");
-  auto destination = staged_restore_directory_ / ID();
-  auto temporary = staged_restore_directory_ / ("." + destination.filename().string());
+  auto staged_restores = StagedRestoresDirectory();
+  auto destination = staged_restores / ID();
+  auto temporary = staged_restores / ("." + destination.filename().string());
   try {
     fs::copy(source, temporary, fs::copy_options::recursive);
     fs::rename(temporary, destination);
@@ -148,9 +162,10 @@ Broker::Prepare(const PrepareCheckpointRequest& request)
   fs::path final(request.destination_path());
   if (!final.is_absolute() || !Within(checkpoint_storage_directory_, final))
     return Reply(false, {}, {}, "checkpoint path must be in checkpoint storage");
+  auto temporary_checkpoints = TemporaryCheckpointsDirectory();
   auto id = ID();
-  fs::path path = temporary_checkpoints_directory_ / id;
-  fs::path target = temporary_checkpoints_directory_ / (id + ".target");
+  fs::path path = temporary_checkpoints / id;
+  fs::path target = temporary_checkpoints / (id + ".target");
   try {
     fs::create_directory(path);
     std::ofstream output(target);
@@ -169,11 +184,11 @@ Broker::Prepare(const PrepareCheckpointRequest& request)
 Response
 Broker::Commit(const CommitRequest& request)
 {
-  fs::path transaction = temporary_checkpoints_directory_ / request.transaction_id();
-  fs::path target = temporary_checkpoints_directory_ / (request.transaction_id() + ".target");
-  if (request.transaction_id().empty() || !Within(temporary_checkpoints_directory_, transaction) ||
-      !Within(temporary_checkpoints_directory_, target) || !fs::is_directory(transaction) ||
-      !fs::is_regular_file(target))
+  auto temporary_checkpoints = TemporaryCheckpointsDirectory();
+  fs::path transaction = temporary_checkpoints / request.transaction_id();
+  fs::path target = temporary_checkpoints / (request.transaction_id() + ".target");
+  if (request.transaction_id().empty() || !Within(temporary_checkpoints, transaction) ||
+      !Within(temporary_checkpoints, target) || !fs::is_directory(transaction) || !fs::is_regular_file(target))
     return Reply(false, {}, {}, "invalid checkpoint transaction");
   std::ifstream input(target);
   std::string destination;
@@ -201,11 +216,13 @@ Broker::Commit(const CommitRequest& request)
 Response
 Broker::Abort(const AbortRequest& request)
 {
-  fs::path transaction = temporary_checkpoints_directory_ / request.transaction_id();
-  fs::path staged = staged_restore_directory_ / request.transaction_id();
-  fs::path target = temporary_checkpoints_directory_ / (request.transaction_id() + ".target");
-  if (request.transaction_id().empty() || !Within(temporary_checkpoints_directory_, transaction) ||
-      !Within(temporary_checkpoints_directory_, target) || !Within(staged_restore_directory_, staged))
+  auto temporary_checkpoints = TemporaryCheckpointsDirectory();
+  auto staged_restores = StagedRestoresDirectory();
+  fs::path transaction = temporary_checkpoints / request.transaction_id();
+  fs::path staged = staged_restores / request.transaction_id();
+  fs::path target = temporary_checkpoints / (request.transaction_id() + ".target");
+  if (request.transaction_id().empty() || !Within(temporary_checkpoints, transaction) ||
+      !Within(temporary_checkpoints, target) || !Within(staged_restores, staged))
     return Reply(false, {}, {}, "invalid transaction");
   try {
     fs::remove_all(transaction);

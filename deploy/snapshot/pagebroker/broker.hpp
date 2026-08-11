@@ -17,11 +17,11 @@ class Broker {
   Response Prepare(const PrepareCheckpointRequest& request);
   Response Commit(const CommitRequest& request);
   Response Abort(const AbortRequest& request);
+  std::filesystem::path TemporaryCheckpointsDirectory() const;
+  std::filesystem::path StagedRestoresDirectory() const;
 
   std::filesystem::path working_directory_;
   std::filesystem::path checkpoint_storage_directory_;
-  std::filesystem::path temporary_checkpoints_directory_;
-  std::filesystem::path staged_restore_directory_;
 };
 
 }  // namespace snapshot::pagebroker
