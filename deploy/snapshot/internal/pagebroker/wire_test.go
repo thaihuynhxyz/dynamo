@@ -37,12 +37,13 @@ func TestCppWireCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got Response
-	if err := proto.Unmarshal(out, &got); err != nil || !got.GetOk() || got.GetTransactionId() != "txn" || got.GetDirectoryPath() != "/checkpoint" {
+	if err := proto.Unmarshal(out, &got); err != nil || got.GetRestore().GetTransactionId() != "txn" || got.GetRestore().GetDirectoryPath() != "/checkpoint" {
 		t.Fatalf("C++ response: %#v %v", &got, err)
 	}
 	sourcePath := "/checkpoint"
 	mode := RestoreRequest_MODE_STAGED
-	request, err := proto.Marshal(&Request{Command: &Request_Restore{Restore: &RestoreRequest{SourcePath: &sourcePath, Mode: &mode}}})
+	transactionID := "txn"
+	request, err := proto.Marshal(&Request{Command: &Request_Restore{Restore: &RestoreRequest{SourcePath: &sourcePath, Mode: &mode, TransactionId: &transactionID}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,17 +63,20 @@ func TestWireFieldNumbers(t *testing.T) {
 	}{
 		{"RestoreRequest", "source_path", 1},
 		{"RestoreRequest", "mode", 2},
+		{"RestoreRequest", "transaction_id", 3},
 		{"PrepareCheckpointRequest", "destination_path", 1},
+		{"PrepareCheckpointRequest", "transaction_id", 2},
 		{"CommitRequest", "transaction_id", 1},
 		{"AbortRequest", "transaction_id", 1},
 		{"Request", "restore", 1},
 		{"Request", "prepare_checkpoint", 2},
 		{"Request", "commit", 3},
 		{"Request", "abort", 4},
-		{"Response", "ok", 1},
-		{"Response", "transaction_id", 2},
-		{"Response", "directory_path", 3},
-		{"Response", "error", 4},
+		{"Response", "restore", 1},
+		{"Response", "prepare_checkpoint", 2},
+		{"Response", "commit", 3},
+		{"Response", "abort", 4},
+		{"Response", "error", 5},
 	}
 	for _, want := range fields {
 		message := File_pagebroker_proto.Messages().ByName(want.message)

@@ -7,9 +7,9 @@ main(int argc, char** argv)
 {
   if (argc == 1) {
     Response response;
-    response.set_ok(true);
-    response.set_transaction_id("txn");
-    response.set_directory_path("/checkpoint");
+    auto* restore = response.mutable_restore();
+    restore->set_transaction_id("txn");
+    restore->set_directory_path("/checkpoint");
     std::string encoded;
     if (!response.SerializeToString(&encoded))
       return 1;
