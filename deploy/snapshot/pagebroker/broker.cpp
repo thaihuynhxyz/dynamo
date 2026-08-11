@@ -32,13 +32,13 @@ Reply(bool ok, std::string transaction_id = {}, std::string directory_path = {},
 }
 
 bool
-Within(const fs::path& root, const fs::path& path)
+IsWithinDirectory(const fs::path& directory, const fs::path& path)
 {
-  auto canonical_root = fs::weakly_canonical(root);
+  auto canonical_directory = fs::weakly_canonical(directory);
   auto canonical_path = fs::weakly_canonical(path);
-  auto mismatch =
-      std::mismatch(canonical_root.begin(), canonical_root.end(), canonical_path.begin(), canonical_path.end());
-  return mismatch.first == canonical_root.end();
+  auto mismatch = std::mismatch(
+      canonical_directory.begin(), canonical_directory.end(), canonical_path.begin(), canonical_path.end());
+  return mismatch.first == canonical_directory.end();
 }
 
 uintmax_t
@@ -127,7 +127,7 @@ Response
 Broker::Restore(const RestoreRequest& request)
 {
   fs::path source(request.source_path());
-  if (!source.is_absolute() || !Within(checkpoint_storage_directory_, source) || !fs::is_directory(source))
+  if (!source.is_absolute() || !IsWithinDirectory(checkpoint_storage_directory_, source) || !fs::is_directory(source))
     return Reply(false, {}, {}, "checkpoint path must be an existing directory in checkpoint storage");
   if (request.mode() == RestoreRequest::MODE_DIRECT)
     return Reply(true, {}, source.string());
@@ -160,7 +160,7 @@ Response
 Broker::Prepare(const PrepareCheckpointRequest& request)
 {
   fs::path final(request.destination_path());
-  if (!final.is_absolute() || !Within(checkpoint_storage_directory_, final))
+  if (!final.is_absolute() || !IsWithinDirectory(checkpoint_storage_directory_, final))
     return Reply(false, {}, {}, "checkpoint path must be in checkpoint storage");
   auto temporary_checkpoints = TemporaryCheckpointsDirectory();
   auto id = ID();
@@ -187,14 +187,15 @@ Broker::Commit(const CommitRequest& request)
   auto temporary_checkpoints = TemporaryCheckpointsDirectory();
   fs::path transaction = temporary_checkpoints / request.transaction_id();
   fs::path target = temporary_checkpoints / (request.transaction_id() + ".target");
-  if (request.transaction_id().empty() || !Within(temporary_checkpoints, transaction) ||
-      !Within(temporary_checkpoints, target) || !fs::is_directory(transaction) || !fs::is_regular_file(target))
+  if (request.transaction_id().empty() || !IsWithinDirectory(temporary_checkpoints, transaction) ||
+      !IsWithinDirectory(temporary_checkpoints, target) || !fs::is_directory(transaction) ||
+      !fs::is_regular_file(target))
     return Reply(false, {}, {}, "invalid checkpoint transaction");
   std::ifstream input(target);
   std::string destination;
   std::getline(input, destination);
   fs::path final(destination);
-  if (!input || !final.is_absolute() || !Within(checkpoint_storage_directory_, final))
+  if (!input || !final.is_absolute() || !IsWithinDirectory(checkpoint_storage_directory_, final))
     return Reply(false, {}, {}, "invalid checkpoint transaction");
   auto promotion = final.parent_path() / ("." + final.filename().string() + ".pagebroker-" + request.transaction_id());
   try {
@@ -221,8 +222,8 @@ Broker::Abort(const AbortRequest& request)
   fs::path transaction = temporary_checkpoints / request.transaction_id();
   fs::path staged = staged_restores / request.transaction_id();
   fs::path target = temporary_checkpoints / (request.transaction_id() + ".target");
-  if (request.transaction_id().empty() || !Within(temporary_checkpoints, transaction) ||
-      !Within(temporary_checkpoints, target) || !Within(staged_restores, staged))
+  if (request.transaction_id().empty() || !IsWithinDirectory(temporary_checkpoints, transaction) ||
+      !IsWithinDirectory(temporary_checkpoints, target) || !IsWithinDirectory(staged_restores, staged))
     return Reply(false, {}, {}, "invalid transaction");
   try {
     fs::remove_all(transaction);
