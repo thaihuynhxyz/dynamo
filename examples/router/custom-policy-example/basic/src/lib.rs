@@ -34,6 +34,25 @@ impl WorkerScorer for LeastBusyScorer {
     }
 }
 
+struct UncachedBlocksScorer;
+
+impl WorkerScorer for UncachedBlocksScorer {
+    fn required_worker_inputs(&self) -> WorkerInputs {
+        WorkerInputs::CACHE
+    }
+
+    fn score(
+        &mut self,
+        context: &WorkerSelectionContext<'_>,
+        candidate: &WorkerCandidate,
+    ) -> Result<f64, WorkerSelectionPolicyError> {
+        let cache = candidate
+            .cache()
+            .ok_or_else(|| WorkerSelectionPolicyError::failed("cache input unavailable"))?;
+        Ok((context.request_blocks() as f64 - cache.device_overlap_blocks()).max(0.0))
+    }
+}
+
 struct LowestCostPicker;
 
 impl WorkerPicker for LowestCostPicker {
@@ -66,7 +85,7 @@ fn provider(
             WorkerSelectionPolicy::new(
                 config.clone(),
                 worker_type,
-                vec![Box::new(LeastBusyScorer)],
+                vec![Box::new(LeastBusyScorer), Box::new(UncachedBlocksScorer)],
                 Box::new(LowestCostPicker),
             )
         },
