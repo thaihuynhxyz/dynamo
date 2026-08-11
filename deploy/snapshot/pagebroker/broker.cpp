@@ -167,9 +167,11 @@ Broker::Prepare(const PrepareCheckpointRequest& request)
   fs::path path = temporary_checkpoints / id;
   fs::path target = temporary_checkpoints / (id + ".target");
   try {
-    fs::create_directory(path);
+    if (!fs::create_directory(path))
+      throw std::runtime_error("create checkpoint transaction");
     std::ofstream output(target);
     output << final.string() << '\n';
+    output.close();
     if (!output)
       throw std::runtime_error("create transaction target");
   }

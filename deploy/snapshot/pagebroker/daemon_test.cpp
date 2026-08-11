@@ -74,13 +74,16 @@ main()
   assert(!broker.HandleRequest(missing_transaction).ok());
   auto direct = broker.HandleRequest(MakeRestore(source.string()));
   assert(direct.ok() && direct.directory_path() == source.string());
+  auto outside = root / "outside";
+  fs::create_directories(outside);
   auto staged = broker.HandleRequest(MakeRestore(source.string(), RestoreRequest::MODE_STAGED));
   assert(staged.ok() && fs::exists(fs::path(staged.directory_path()) / "manifest.json"));
   assert(broker.HandleRequest(MakeAbort(staged.transaction_id())).ok());
   assert(!fs::exists(staged.directory_path()));
+  fs::create_symlink(outside, source / "unexpected-link");
+  assert(!broker.HandleRequest(MakeRestore(source.string(), RestoreRequest::MODE_STAGED)).ok());
+  fs::remove(source / "unexpected-link");
   assert(!broker.HandleRequest(MakeRestore("relative")).ok());
-  auto outside = root / "outside";
-  fs::create_directories(outside);
   assert(!broker.HandleRequest(MakeRestore(outside.string())).ok());
   struct statvfs disk {};
   assert(statvfs((root / "nvme").c_str(), &disk) == 0);
